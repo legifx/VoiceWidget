@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""VoiceWidget — Dynamic Island. Complett rund, 100% Opacity, Auto-Reset."""
+"""VoiceWidget — Dynamic Island. Komplett rund (transparente Ecken), dynamische Größe, smooth animations."""
 import sys,os,json,configparser,threading,subprocess,io,time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -30,7 +30,6 @@ SUCCESS="#22c55e"; SEC="#86868b"; DIV="#d2d2d7"
 PURP="#8b5cf6"; PURP_LT="#a78bfa"
 
 def mp_enc(bound,files):
-    """Encode multipart/form-data. bound=bytes, files={name:(filename,bytes,mime)} → bytes"""
     buf=io.BytesIO()
     for n,(fn,dt,mime) in files.items():
         buf.write(b"--"+bound+b"\r\n")
@@ -41,7 +40,6 @@ def mp_enc(bound,files):
     return buf.getvalue()
 
 def http_post(url,wav):
-    """POST wav bytes to /transcribe"""
     import http.client
     p=urlparse(url)
     conn=http.client.HTTPConnection(p.hostname,p.port or 80,timeout=120)
@@ -75,22 +73,19 @@ class Island(ctk.CTk):
         self.rec=False; self.ad=[]; self.ast=None; self.txt=""
         self.sr=16000; self._t0=0; self._state="idle"
 
-        # Fenster: komplett rund, 100% Opacity
+        # Fenster: transparente Ecken (auf Windows: Farbkey)
         self.configure(fg_color=BG_W)
         self.overrideredirect(True)
         self.attributes("-topmost",True,"-alpha",OP)
-        self.wm_attributes("-transparentcolor","#000001")  # optional
+        # Transparente Farbe für Ecken (wenn nicht voll rund)
+        self.wm_attributes("-transparentcolor","#000001")
 
-        # Größe + Position (zentriert oben)
         sw=self.winfo_screenwidth()
         self.geometry(f"240x64+{sw//2-120}+48")
-
-        # Drag
-        self.bind("<Button-1>",self._down)
-        self.bind("<B1-Motion>",self._move)
+        self.bind("<Button-1>",self._down); self.bind("<B1-Motion>",self._move)
         self._dx=self._dy=0
 
-        # Haupt-Frame: komplett abgerundet (voll rund)
+        # Haupt-Frame: weiss, maximal abgerundet (fast rund)
         self.main=ctk.CTkFrame(self,fg_color=CARD,corner_radius=999)
         self.main.pack(fill="both",expand=True,padx=8,pady=8)
 
@@ -100,23 +95,42 @@ class Island(ctk.CTk):
     def _down(self,e): self._dx,self._dy=e.x,e.y
     def _move(self,e):
         x=self.winfo_x()+e.x-self._dx; y=self.winfo_y()+e.y-self._dy
-        self.geometry(f"240x64+{x}+{y}")
+        self.geometry(f"{self.winfo_width()}x{self.winfo_height()}+{x}+{y}")
     def _clear(self):
         for w in self.main.winfo_children(): w.destroy()
 
-    # ── UI States ──
+    def _animate_size(self, target_w, target_h, steps=12, delay=20):
+        """Smooth size animation."""
+        cur_w=self.winfo_width(); cur_h=self.winfo_height()
+        if cur_w==target_w and cur_h==target_h:
+            self.geometry(f"{target_w}x{target_h}")
+            return
+        def step(i):
+            if i>=steps:
+                self.geometry(f"{target_w}x{target_h}")
+                return
+            t=i/steps
+            w=int(cur_w + (target_w-cur_w)*t)
+            h=int(cur_h + (target_h-cur_h)*t)
+            self.geometry(f"{w}x{h}")
+            self.after(delay,lambda:step(i+1))
+        step(0)
+
+    # ── IDLE ──
     def _idle(self):
-        self._clear(); self._state="idle"; self.geometry("240x64")
-        r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=16,pady=0)
+        self._clear(); self._state="idle"
+        r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=16,pady=12)
         ctk.CTkButton(r,text="🎤",width=40,height=40,corner_radius=20,
             fg_color=PURP,hover_color=PURP_LT,text_color=CARD,font=("Segoe UI",17),
             command=self._toggle,border_width=0).pack(side="left")
         ctk.CTkLabel(r,text="Voice",font=("Segoe UI",14,"bold"),text_color=FG).pack(side="left",padx=10)
         ctk.CTkLabel(r,text="●",font=("Segoe UI",8),text_color=SUCCESS).pack(side="right")
+        self.after(100, lambda: self._animate_size(240, 64))
 
+    # ── RECORDING ──
     def _rec_ui(self):
-        self._clear(); self._state="rec"; self.geometry("300x64")
-        r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=16,pady=0)
+        self._clear(); self._state="rec"
+        r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=16,pady=12)
         ctk.CTkButton(r,text="⏹",width=40,height=40,corner_radius=20,
             fg_color=REC,hover_color="#e02020",text_color=CARD,font=("Segoe UI",17),
             command=self._toggle,border_width=0).pack(side="left")
@@ -125,20 +139,21 @@ class Island(ctk.CTk):
         self._vu=ctk.CTkLabel(r,text="▁▁▁▁▁▁",font=("Segoe UI",9),text_color=REC)
         self._vu.pack(side="left")
         ctk.CTkLabel(r,text="●",font=("Segoe UI",8),text_color=REC).pack(side="right")
+        self.after(100, lambda: self._animate_size(300, 64))
 
+    # ── LOADING ──
     def _load_ui(self):
-        self._clear(); self._state="load"; self.geometry("200x64")
-        r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=16,pady=0)
+        self._clear(); self._state="load"
+        r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=16,pady=12)
         ctk.CTkLabel(r,text="⏳",font=("Segoe UI",17),text_color=SEC).pack(side="left")
         ctk.CTkLabel(r,text="Transkribieren...",font=("Segoe UI",13),text_color=SEC).pack(side="left",padx=8)
+        self.after(100, lambda: self._animate_size(200, 64))
 
+    # ── RESULT ──
     def _res_ui(self,text,lang,conf,dur):
         self._clear(); self._state="result"; self.txt=text
-        h=120 if len(text)<80 else 150
-        self.geometry(f"360x{h}")
-        r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=16,pady=0)
+        r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=16,pady=12)
 
-        # Header
         hdr=ctk.CTkFrame(r,fg_color="transparent"); hdr.pack(fill="x",pady=(0,4))
         self._stat=ctk.CTkLabel(hdr,text=f"✅  {lang.upper()}  {conf:.0f}%  ·  {dur:.1f}s",
             font=("Segoe UI",11),text_color=SUCCESS); self._stat.pack(side="left")
@@ -146,12 +161,13 @@ class Island(ctk.CTk):
             fg_color="transparent",hover_color=DIV,text_color=SEC,
             font=("Segoe UI",10),command=self._reset).pack(side="right")
 
-        # Text
-        ctk.CTkLabel(r,text=text[:120]+("…"if len(text)>120 else""),
-            font=("Segoe UI",12),text_color=FG,anchor="w",justify="left",wraplength=330
-        ).pack(fill="x",pady=(0,8))
+        # Text mit automatischer Zeilenumbruch und dynamischer Höhe
+        lines = self._wrap_text(text, 38)  # ~38 Zeichen pro Zeile
+        preview = "\n".join(lines[:5]) + ("…" if len(lines) > 5 else "")
+        txt_lbl=ctk.CTkLabel(r,text=preview,font=("Segoe UI",12),text_color=FG,
+            anchor="w",justify="left",wraplength=330)
+        txt_lbl.pack(fill="x",pady=(0,8))
 
-        # Actions
         acts=ctk.CTkFrame(r,fg_color="transparent"); acts.pack(fill="x")
         ctk.CTkButton(acts,text="📋",width=36,height=36,corner_radius=18,
             fg_color=PURP,hover_color=PURP_LT,text_color=CARD,font=("Segoe UI",14),
@@ -168,6 +184,23 @@ class Island(ctk.CTk):
 
         self.clipboard_clear(); self.clipboard_append(text)
         threading.Thread(target=self._load_sess,daemon=True).start()
+
+        # Dynamische Höhe berechnen und animieren
+        line_h=18; pad=40; hdr_h=30; acts_h=50
+        total_h = hdr_h + (len(lines[:5])*line_h) + 8 + acts_h + pad
+        total_h = max(120, min(total_h, 300))
+        self.after(100, lambda: self._animate_size(360, total_h))
+
+    def _wrap_text(self,text,width):
+        words=text.split()
+        lines=[]; cur=""
+        for w in words:
+            if len(cur)+len(w)+1 <= width:
+                cur = (cur+" "+w).strip()
+            else:
+                lines.append(cur); cur=w
+        if cur: lines.append(cur)
+        return lines
 
     def _toggle(self):
         if self._state=="rec": self._stop()
