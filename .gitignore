@@ -1,0 +1,25 @@
+# VoiceWidget — .gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.env
+
+# Config (user-specific)
+config.ini
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Windows shortcuts
+*.lnk
+*.bat
+
+# Audio temp files
+*.wav
+*.mp3
