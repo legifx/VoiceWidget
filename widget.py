@@ -22,10 +22,44 @@ try:
 except:
     sd=np=sf=None; HAS_AUDIO=False
 
-# ── Farben ──
 W="#ffffff";BG="#f5f6fa";DARK="#1a1a2e";GR="#e0e3ea"
 PU="#8b5cf6";PUL="#a78bfa";BL="#60a5fa";BLL="#93c5fd"
 GN="#34d399";RD="#f87171";GY="#9ca3af";FG="#374151"
+
+def http_post(url, fields, files):
+    """Multipart form via stdlib http.client. fields={str:str}, files={str:(name,data,mime)}"""
+    import email.mime.multipart, email.mime.base, email.generator
+    import io as _io, http.client as hc
+
+    boundary = b"----VoiceWidget123"
+    buf = _io.BytesIO()
+
+    # fields
+    for k, v in fields.items():
+        buf.write(b"--" + boundary + b"\r\n")
+        buf.write(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode())
+        buf.write(v.encode()); buf.write(b"\r\n")
+
+    # files
+    for k, (fname, data, mime) in files.items():
+        buf.write(b"--" + boundary + b"\r\n")
+        buf.write(f'Content-Disposition: form-data; name="{k}"; filename="{fname}"\r\n'.encode())
+        buf.write(f"Content-Type: {mime}\r\n\r\n".encode())
+        buf.write(data); buf.write(b"\r\n")
+
+    buf.write(b"--" + boundary + b"--\r\n")
+
+    _, hostport = url.split("://")
+    host, portpath = hostport.split("/", 1)
+    path = "/" + portpath.split("/", 1)[-1] if "/" in portpath else "/"
+    port = int(host.split(":")[-1]) if ":" in host else 80
+
+    conn = hc.HTTPConnection(host.split(":")[0], port, timeout=120)
+    conn.connect()
+    conn.request("POST", path, buf.getvalue(),
+        {"Content-Type": f"multipart/form-data; boundary={boundary.decode()}"})
+    resp = conn.getresponse()
+    return resp.read()
 
 class Srv:
     def check(self):
@@ -35,10 +69,9 @@ class Srv:
                 return json.loads(r.read())
         except:return{"error":"x"}
     def x(self,wav):
-        import requests
         try:
-            r=requests.post(f"{WU}/transcribe",files={"file":("v.wav",wav,"audio/wav")},timeout=120)
-            return r.json()
+            data=http_post(f"{WU}/transcribe",{},{"file":("v.wav",wav,"audio/wav")})
+            return json.loads(data)
         except Exception as ex:
             return{"error":str(ex)}
     def tmux(self):
@@ -58,29 +91,23 @@ class V(ctk.CTk):
         self.srv=Srv()
         self.rec=False;self.ad=[];self.ast=None;self.txt=""
         self.sr=16000;self._t0=0;self._state="idle"
-
         self.title("");self.configure(fg_color=BG);self.overrideredirect(True)
         self.attributes("-topmost",True,"-alpha",OP)
         sw=self.winfo_screenwidth()
         self.geometry("220x58+"+str(sw//2-110)+"+48")
-        self.bind("<Button-1>",self._ds);self.bind("<B1-Motion",self._dm)
+        self.bind("<Button-1>",self._ds);self.bind("<B1-Motion>",self._dm)
         self._dx=self._dy=0
-
-        # Weiss, abgerundet, rund wie eine Pille
         self.main=ctk.CTkFrame(self,fg_color=W,corner_radius=29)
         self.main.pack(fill="both",expand=True)
-
         self._idle(); threading.Thread(target=self._hc,daemon=True).start()
 
     def _ds(self,e):self._dx,self._dy=e.x,e.y
     def _dm(self,e):
         p=self.winfo_x()+e.x-self._dx; n=self.winfo_y()+e.y-self._dy
         self.geometry(f"220x58+{p}+{n}")
-
     def _clear(self):
         for w in self.main.winfo_children():w.destroy()
 
-    # ── IDLE: mic + label + dot ──
     def _idle(self):
         self._clear(); self._state="idle"; self.geometry("220x58")
         r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=12,pady=0)
@@ -90,7 +117,6 @@ class V(ctk.CTk):
         ctk.CTkLabel(r,text="Voice",font=("Segoe UI",15,"bold"),text_color=DARK).pack(side="left",padx=(0,8))
         ctk.CTkLabel(r,text="●",font=("Segoe UI",10),text_color=GN).pack(side="right",padx=8)
 
-    # ── RECORDING: stop + timer + vu ──
     def _rec(self):
         self._clear(); self._state="rec"; self.geometry("290x58")
         r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=12,pady=0)
@@ -102,31 +128,25 @@ class V(ctk.CTk):
         self._vu=ctk.CTkLabel(r,text="▁▁▁▁▁▁",font=("Segoe UI",10),text_color=PU)
         self._vu.pack(side="left")
 
-    # ── LOADING: spinner ──
     def _load(self):
         self._clear(); self._state="load"; self.geometry("180x58")
         r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=12,pady=0)
         ctk.CTkLabel(r,text="⏳",font=("Segoe UI",18),text_color=GY).pack(side="left",padx=(4,8))
         ctk.CTkLabel(r,text="Transkribieren...",font=("Segoe UI",13),text_color=GY).pack(side="left")
 
-    # ── RESULT: text + actions ──
     def _res(self,text,lang,conf,dur):
         self._clear(); self._state="res"; self.geometry("360x120")
         self.txt=text
         r=ctk.CTkFrame(self.main,fg_color="transparent"); r.pack(fill="both",expand=True,padx=12,pady=0)
-        # Status + dismiss
         top=ctk.CTkFrame(r,fg_color="transparent"); top.pack(fill="x",pady=(0,6))
         self._sl=ctk.CTkLabel(top,text=f"✅  {lang.upper()}  {conf:.0f}%  ·  {dur:.1f}s",
-            font=("Segoe UI",11),text_color=GN)
-        self._sl.pack(side="left")
+            font=("Segoe UI",11),text_color=GN); self._sl.pack(side="left")
         ctk.CTkButton(top,text="✕",width=24,height=24,corner_radius=12,
             fg_color="transparent",hover_color=GR,text_color=GY,
             font=("Segoe UI",10),command=self._dismiss).pack(side="right")
-        # Text preview
         ctk.CTkLabel(r,text=text[:110]+("…"if len(text)>110 else""),
             font=("Segoe UI",12),text_color=FG,anchor="w",justify="left",wraplength=325
         ).pack(fill="x",pady=(0,8))
-        # Actions row
         acts=ctk.CTkFrame(r,fg_color="transparent"); acts.pack(fill="x")
         ctk.CTkButton(acts,text="📋",width=38,height=38,corner_radius=19,
             fg_color=PU,hover_color=PUL,text_color=W,font=("Segoe UI",15),
@@ -141,7 +161,6 @@ class V(ctk.CTk):
             fg_color=GR,button_color=BL,button_hover_color=BLL,
             dropdown_fg_color=W,dropdown_hover_color=BLL,
             text_color=DARK,font=("Segoe UI",12,"bold")).pack(side="left")
-        # Clipboard
         self.clipboard_clear(); self.clipboard_append(text)
         threading.Thread(target=self._lt,daemon=True).start()
 
@@ -152,7 +171,6 @@ class V(ctk.CTk):
     def _record(self):
         if not HAS_AUDIO: return
         self.rec=True; self.ad=[]; self._rec(); self._t0=time.time()
-
         def cb(indata,frames,t,status):
             if not self.rec: return
             self.ad.append(indata.copy())
@@ -166,17 +184,14 @@ class V(ctk.CTk):
                     self._rt.configure(text=f"{mm}:{ss:02d}")if hasattr(self,'_rt')else None,
                 ))
             except: pass
-
         try:
             self.ast=sd.InputStream(samplerate=self.sr,channels=1,dtype="float32",callback=cb)
             self.ast.start()
         except Exception as e:
-            print(f"[REC ERROR] {e}")
-            self.rec=False; self._idle()
+            print(f"[REC ERROR] {e}"); self.rec=False; self._idle()
 
     def _stop(self):
-        print(f"[STOP] ad={len(self.ad)} frames")
-        self.rec=False
+        print(f"[STOP] ad={len(self.ad)}"); self.rec=False
         if self.ast:
             try: self.ast.stop(); self.ast.close()
             except Exception as e: print(f"[STOP AST ERROR] {e}")
@@ -197,8 +212,7 @@ class V(ctk.CTk):
             print(f"[TX] response={r}")
             self.after(0,lambda res=r:self._rx(res))
         except Exception as e:
-            print(f"[TX ERROR] {e}")
-            self.after(0,self._idle)
+            print(f"[TX ERROR] {e}"); self.after(0,self._idle)
 
     def _rx(self,r):
         print(f"[RX] {r}")
@@ -211,14 +225,13 @@ class V(ctk.CTk):
     def _cp(self):
         self.clipboard_clear(); self.clipboard_append(self.txt)
         self._sl.configure(text="📋 Kopiert!")
-        self.after(1500,lambda:self._sl.configure(text=f"✅  {self._sl.cget('text').split('  ')[-1]}"))
+        self.after(1500,lambda:self._sl.configure(text=f"✅"))
 
     def _lt(self):
         ss=self.srv.tmux()
         if ss:
             self.after(0,lambda s=ss:(
-                self._tv.set(s[0]),
-                self._tb.configure(state="normal"),
+                self._tv.set(s[0]), self._tb.configure(state="normal"),
                 self._tb.master.winfo_children()[2].configure(values=s)
             ))
 
@@ -231,8 +244,7 @@ class V(ctk.CTk):
 
     def _dismiss(self): self.txt=""; self._idle()
     def _hc(self):
-        r=self.srv.check()
-        print(f"[HC] {r}")
+        r=self.srv.check(); print(f"[HC] {r}")
 
 if __name__=="__main__":
     ctk.set_appearance_mode("light"); ctk.set_default_color_theme("dark-blue")
