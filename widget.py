@@ -1,588 +1,414 @@
 #!/usr/bin/env python3
 """
-VoiceWidget — Liquid Glass Transcription Widget
-================================================
-Windows Desktop Widget: Sprachaufnahme → Server-Transkription → Tmux-Einfügung
+VoiceWidget — Minimal Edition
+==============================
+Winziges Floating Widget: Ein Klick aufnehmen, transkribieren, in Zwischenablage.
 
 Usage:
-    python widget.py              # Normal start
-    python widget.py --debug      # Debug mode (console output)
+    python widget.py
 """
-import sys, os, json, configparser, threading, queue, time, subprocess, tempfile, shutil
+import sys, os, json, configparser, threading, subprocess, io
 from pathlib import Path
-from datetime import datetime
 
-# ── Config ─────────────────────────────────────────────
 CONFIG_FILE = Path(__file__).parent / "config.ini"
-DEFAULT_CONFIG = {
-    "Server": {
-        "host": "100.100.196.29",
-        "user": "server",
-        "port": "22",
-        "whisper_port": "8766",
-    },
-    "Widget": {
-        "theme": "liquid_glass",
-        "opacity": "0.92",
-        "autostart": "false",
-    }
+DEFAULT = {
+    "Server": {"host": "192.168.1.182", "user": "server", "port": "22", "whisper_port": "8766"},
+    "Widget": {"opacity": "0.9"},
 }
+cfg = configparser.ConfigParser()
+if CONFIG_FILE.exists():
+    cfg.read(CONFIG_FILE)
+for sec, keys in DEFAULT.items():
+    for k, v in keys.items():
+        if not cfg.has_option(sec, k):
+            cfg.set(sec, k, v)
+with open(CONFIG_FILE, "w") as f:
+    cfg.write(f)
 
-def load_config():
-    config = configparser.ConfigParser()
-    if CONFIG_FILE.exists():
-        config.read(CONFIG_FILE)
-    for section, keys in DEFAULT_CONFIG.items():
-        if not config.has_section(section):
-            config.add_section(section)
-        for key, val in keys.items():
-            if not config.has_option(section, key):
-                config.set(section, key, val)
-    with open(CONFIG_FILE, "w") as f:
-        config.write(f)
-    return config
+HOST = cfg.get("Server", "host")
+USER = cfg.get("Server", "user")
+WPORT = cfg.get("Server", "whisper_port")
+OPACITY = float(cfg.get("Widget", "opacity"))
+WHISPER_URL = f"http://{HOST}:{WPORT}"
 
-CONFIG = load_config()
-SERVER_HOST = CONFIG.get("Server", "host")
-SERVER_USER = CONFIG.get("Server", "user")
-SERVER_PORT = CONFIG.get("Server", "port")
-WHISPER_PORT = CONFIG.get("Server", "whisper_port")
-WIDGET_OPACITY = float(CONFIG.get("Widget", "opacity"))
-
-
-# ── CustomTkinter + Imports ───────────────────────────
 try:
     import customtkinter as ctk
-    from PIL import Image, ImageDraw, ImageTk
-except ImportError as e:
-    print(f"Fehlende Abhaengigkeit: {e}")
-    print("Bitte installieren: pip install customtkinter Pillow")
-    sys.exit(1)
+except ImportError:
+    ctk = None
 
 try:
-    import sounddevice as sd
-    import soundfile as sf
-    import numpy as np
+    import sounddevice as sd, numpy as np, soundfile as sf
 except ImportError:
-    print("sounddevice nicht installiert. Audio-Aufnahme deaktiviert.")
-    print("   pip install sounddevice soundfile numpy")
-    sd = None
-    sf = None
-    np = None
+    sd = np = sf = None
 
-# ── Server Connection ─────────────────────────────────
-class ServerHelper:
-    """SSH + HTTP Kommunikation mit dem Server."""
 
-    def __init__(self):
-        self.host = SERVER_HOST
-        self.user = SERVER_USER
-        self.port = int(SERVER_PORT)
-        self.whisper_url = f"http://{self.host}:{WHISPER_PORT}"
-
-    def check_connection(self):
-        """Prueft ob Server erreichbar ist."""
+# ── Server ──
+class Server:
+    def check(self):
         try:
             import urllib.request
-            req = urllib.request.Request(f"{self.whisper_url}/health")
-            with urllib.request.urlopen(req, timeout=5) as r:
+            with urllib.request.urlopen(f"{WHISPER_URL}/health", timeout=5) as r:
                 return json.loads(r.read())
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e)[:30]}
 
-    def transcribe(self, wav_data):
-        """Sendet Audio an Whisper API und gibt Text zurueck."""
+    def transcribe(self, wav):
         import urllib.request
-        boundary = "----VoiceWidgetBoundary"
-        body = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="voice.wav"\r\n'
-            f"Content-Type: audio/wav\r\n\r\n"
-        ).encode() + wav_data + f"\r\n--{boundary}--\r\n".encode()
-
-        req = urllib.request.Request(
-            f"{self.whisper_url}/transcribe",
-            data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        )
+        b = f"----Boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"v.wav\"\r\nContent-Type: audio/wav\r\n\r\n".encode() + wav + b"\r\n------Boundary--\r\n".encode()
+        req = urllib.request.Request(f"{WHISPER_URL}/transcribe", data=b,
+            headers={"Content-Type": "multipart/form-data; boundary=----Boundary"})
         try:
             with urllib.request.urlopen(req, timeout=120) as r:
                 return json.loads(r.read())
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e)[:30]}
 
-    def get_tmux_sessions(self):
-        """Holt Liste der aktiven Tmux Sessions via SSH."""
+    def tmux_sessions(self):
         try:
-            cmd = [
-                "ssh", "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=5",
-                f"{self.user}@{self.host}",
-                "-p", str(self.port),
-                "tmux list-sessions -F '#{session_name}' 2>/dev/null || echo 'NO_TMUX'"
-            ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            sessions = [s.strip() for s in r.stdout.split("\n") if s.strip() and s.strip() != "NO_TMUX"]
-            return sessions if sessions else []
+            r = subprocess.run(["ssh", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=accept-new",
+                f"{USER}@{HOST}", "tmux list-sessions -F '#{session_name}' 2>/dev/null"],
+                capture_output=True, text=True, timeout=8)
+            return [s.strip() for s in r.stdout.split("\n") if s.strip()]
         except:
             return []
 
-    def send_to_tmux(self, session_name, text):
-        """Fuegt Text in eine Tmux Session ein."""
+    def send_tmux(self, session, text):
         try:
             safe = text.replace("'", "'\"'\"'").replace("\n", "\\n")
-            cmd = [
-                "ssh", "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=5",
-                f"{self.user}@{self.host}",
-                "-p", str(self.port),
-                f"tmux send-keys -t '{session_name}' '{safe}' Enter"
-            ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            return r.returncode == 0
+            subprocess.run(["ssh", "-o", "ConnectTimeout=3", f"{USER}@{HOST}",
+                f"tmux send-keys -t '{session}' '{safe}' Enter"],
+                capture_output=True, timeout=8)
+            return True
         except:
             return False
 
 
-# ── Liquid Glass Theme (nur hex, tkinter-kompatibel) ──
-# Die Transparenz/Glass-Effekt kommt ueber window.attributes("-alpha", ...)
-# und die dunkle Farbpalette.
-COLOR_BG = "#0d0d1a"          # Tiefschwarz Hintergrund
-COLOR_GLASS = "#1a1a2e"       # Glasscheibe (dunkel)
-COLOR_GLASS_HOVER = "#2a2a3e" # Glasscheibe hover
-COLOR_GLASS_LIGHT = "#353550" # Hellere Scheibe (Button-Bg)
-COLOR_FG = "#ffffff"          # Primaertext
-COLOR_FG2 = "#8888aa"         # Sekundaertext
-COLOR_ACCENT = "#ff7eb3"      # Pink-Akzent (Aufnehmen)
-COLOR_ACCENT_HOVER = "#ff5588"
-COLOR_PURPLE = "#7c3aed"      # Lila (Tmux/Senden)
-COLOR_PURPLE_HOVER = "#6d28d9"
-COLOR_RED = "#ef4444"         # Rot (Stop)
-COLOR_RED_HOVER = "#dc2626"
-COLOR_GREEN = "#22c55e"       # Gruen (Verbunden)
-COLOR_BORDER = "#2a2a3e"     # Rahmen
-RADIUS = 24
-RADIUS_SM = 14
-FONT = ("Segoe UI",)
-FONT_BOLD = ("Segoe UI", "bold")
-FONT_MONO = ("Cascadia Code", "Consolas", "monospace")
-
-
-# ── Main Widget ────────────────────────────────────────
-class VoiceWidget(ctk.CTk):
+# ── Widget ──
+class MiniWidget(ctk.CTk):
+    W = 260  # width
+    H = 52   # height when idle
 
     def __init__(self):
         super().__init__()
-
-        self.server = ServerHelper()
+        self.srv = Server()
         self.recording = False
         self.audio_data = []
-        self.samplerate = 16000
-        self.transcribed_text = ""
         self.audio_stream = None
+        self.text = ""
+        self.samplerate = 16000
+        self.expanded = False
 
-        # ── Window ──
-        self.title("VoiceWidget")
-        self.configure(fg_color=COLOR_BG)
+        # Window
+        self.title("")
+        self.configure(fg_color="#0d0d1a")
         self.overrideredirect(True)
-        self.attributes("-topmost", True)
-        self.attributes("-alpha", WIDGET_OPACITY)
-        self.geometry("380x540")
-
-        # Center top-right
-        self.update_idletasks()
+        self.attributes("-topmost", True, "-alpha", OPACITY)
         sw = self.winfo_screenwidth()
-        x = sw - 420
-        y = 80
-        self.geometry(f"380x540+{x}+{y}")
+        self.geometry(f"{self.W}x{self.H}+{sw-self.W-24}+80")
 
-        # ── Drag ──
-        self.bind("<Button-1>", self.start_drag)
-        self.bind("<B1-Motion>", self.do_drag)
-        self.drag_x = 0
-        self.drag_y = 0
+        # Drag
+        self.bind("<Button-1>", self._drag_start)
+        self.bind("<B1-Motion>", self._drag)
+        self._dx = self._dy = 0
 
-        # ── Build ──
-        self.build_ui()
-        self.refresh_tmux()
-        self.after(10000, self.auto_refresh_tmux)
+        self._build_idle()
+        self._check()
+        self.after(5000, self._health_poll)
 
-    def start_drag(self, event):
-        self.drag_x = event.x
-        self.drag_y = event.y
+    def _drag_start(self, e):
+        self._dx, self._dy = e.x, e.y
 
-    def do_drag(self, event):
-        x = self.winfo_x() + event.x - self.drag_x
-        y = self.winfo_y() + event.y - self.drag_y
-        self.geometry(f"+{x}+{y}")
+    def _drag(self, e):
+        self.geometry(f"+{self.winfo_x()+e.x-self._dx}+{self.winfo_y()+e.y-self._dy}")
 
-    def build_ui(self):
-        # Glass-Frame
-        self.main = ctk.CTkFrame(
-            self, corner_radius=RADIUS,
-            fg_color=COLOR_GLASS, border_color=COLOR_BORDER, border_width=1
-        )
-        self.main.pack(fill="both", expand=True, padx=8, pady=8)
+    # ── Build: Idle ──
+    def _build_idle(self):
+        self._clear()
+        self.geometry(f"{self.W}x{self.H}")
+        self._frm = ctk.CTkFrame(self, fg_color="#1a1a2e", corner_radius=26,
+            border_color="#2a2a3e", border_width=1)
+        self._frm.pack(fill="both", expand=True, padx=2, pady=2)
 
-        # ── Titlebar ──
-        title_frame = ctk.CTkFrame(self.main, fg_color="transparent", height=40)
-        title_frame.pack(fill="x", padx=20, pady=(16, 0))
+        # Row: status dot + record btn + tmux icon
+        row = ctk.CTkFrame(self._frm, fg_color="transparent")
+        row.pack(fill="both", expand=True, padx=12, pady=0)
 
-        ctk.CTkLabel(
-            title_frame, text="🎤  VoiceWidget",
-            font=(FONT[0], 16, "bold"), text_color=COLOR_FG
-        ).pack(side="left")
-
-        ctk.CTkButton(
-            title_frame, text="✕", width=32, height=32,
-            corner_radius=16, fg_color="transparent",
-            hover_color=COLOR_GLASS_HOVER, text_color=COLOR_FG2,
-            font=(FONT[0], 14), command=self.quit_app
-        ).pack(side="right")
-
-        # ── Status ──
-        self.status_lbl = ctk.CTkLabel(
-            self.main, text="🔌 Verbinde...",
-            font=(FONT[0], 11), text_color=COLOR_FG2
-        )
-        self.status_lbl.pack(pady=(4, 0))
-        self.check_connection()
-
-        # ── Record Button ──
-        btn_frame = ctk.CTkFrame(self.main, fg_color="transparent")
-        btn_frame.pack(pady=(20, 10))
-
-        self.record_btn = ctk.CTkButton(
-            btn_frame, text="⏺  AUFNEHMEN",
-            width=200, height=100, corner_radius=50,
-            fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER,
-            text_color="#ffffff", font=(FONT[0], 18, "bold"),
-            command=self.toggle_recording
-        )
-        self.record_btn.pack()
-
-        self.rec_lbl = ctk.CTkLabel(
-            self.main, text="",
-            font=(FONT[0], 11), text_color=COLOR_ACCENT
-        )
-        self.rec_lbl.pack()
-
-        # ── Tmux Section ──
-        tmux_frame = ctk.CTkFrame(self.main, fg_color="transparent")
-        tmux_frame.pack(fill="x", padx=20, pady=(10, 4))
-
-        ctk.CTkLabel(
-            tmux_frame, text="📟  Ziel-Tmux",
-            font=(FONT[0], 11), text_color=COLOR_FG2
-        ).pack(anchor="w")
-
-        self.tmux_var = ctk.StringVar(value="(lade...)")
-        self.tmux_drop = ctk.CTkOptionMenu(
-            tmux_frame, variable=self.tmux_var, values=["(lade...)"],
-            corner_radius=RADIUS_SM, fg_color=COLOR_GLASS,
-            button_color=COLOR_PURPLE, button_hover_color=COLOR_PURPLE_HOVER,
-            dropdown_fg_color="#1a1a2e", dropdown_hover_color=COLOR_PURPLE,
-            text_color=COLOR_FG, font=(FONT[0], 13)
-        )
-        self.tmux_drop.pack(fill="x", pady=(4, 0))
-
-        # Send row
-        send_row = ctk.CTkFrame(self.main, fg_color="transparent")
-        send_row.pack(fill="x", padx=20, pady=(4, 0))
-
-        self.send_btn = ctk.CTkButton(
-            send_row, text="📨  In Tmux einfuegen",
-            corner_radius=RADIUS_SM, fg_color=COLOR_PURPLE,
-            hover_color=COLOR_PURPLE_HOVER, text_color="#ffffff",
-            font=(FONT[0], 12, "bold"), state="disabled",
-            command=self.send_to_tmux
-        )
-        self.send_btn.pack(side="left", fill="x", expand=True)
-
-        ctk.CTkButton(
-            send_row, text="🔄", width=40, height=36,
-            corner_radius=RADIUS_SM, fg_color=COLOR_GLASS,
-            hover_color=COLOR_GLASS_HOVER, text_color=COLOR_FG2,
-            font=(FONT[0], 14), command=self.refresh_tmux
-        ).pack(side="right", padx=(6, 0))
-
-        # ── Text Output ──
-        text_area = ctk.CTkFrame(self.main, fg_color="transparent")
-        text_area.pack(fill="both", expand=True, padx=20, pady=(10, 16))
-
-        self.text_box = ctk.CTkTextbox(
-            text_area, corner_radius=RADIUS_SM,
-            fg_color=COLOR_GLASS, border_color=COLOR_BORDER, border_width=1,
-            text_color=COLOR_FG, font=(FONT_MONO[0], 12),
-            wrap="word", height=100
-        )
-        self.text_box.pack(side="left", fill="both", expand=True)
-        self.text_box.insert("1.0", "Transkribierter Text erscheint hier...")
-        self.text_box.configure(state="disabled")
-
-        ctk.CTkButton(
-            text_area, text="📋", width=40, height=100,
-            corner_radius=RADIUS_SM, fg_color=COLOR_GLASS,
-            hover_color=COLOR_GLASS_HOVER, text_color=COLOR_FG2,
-            font=(FONT[0], 18), command=self.copy_text
-        ).pack(side="right", padx=(6, 0))
-
-        # ── Bottom Bar ──
-        bottom = ctk.CTkFrame(self.main, fg_color="transparent", height=30)
-        bottom.pack(fill="x", padx=20, pady=(0, 12))
-
-        self.dot = ctk.CTkLabel(
-            bottom, text="●", font=(FONT[0], 8), text_color=COLOR_GREEN
-        )
+        self.dot = ctk.CTkLabel(row, text="●", font=("Segoe UI", 9), text_color="#ef4444")
         self.dot.pack(side="left")
 
-        ctk.CTkLabel(
-            bottom, text=" verbunden",
-            font=(FONT[0], 10), text_color=COLOR_FG2
-        ).pack(side="left", padx=(4, 0))
+        self.rec_btn = ctk.CTkButton(row, text="🎤", width=38, height=38,
+            corner_radius=19, fg_color="#7c3aed", hover_color="#6d28d9",
+            text_color="#fff", font=("Segoe UI", 16), command=self._click)
+        self.rec_btn.pack(side="left", padx=(8, 0))
 
-        ctk.CTkButton(
-            bottom, text="⚙️", width=28, height=28,
-            corner_radius=14, fg_color="transparent",
-            hover_color=COLOR_GLASS_HOVER, text_color=COLOR_FG2,
-            font=(FONT[0], 12), command=self.show_settings
+        self.status = ctk.CTkLabel(row, text="", font=("Segoe UI", 10),
+            text_color="#6666aa", width=80)
+        self.status.pack(side="left", padx=(6, 0))
+
+        # Tiny gear for settings
+        ctk.CTkButton(row, text="⋯", width=24, height=24, corner_radius=12,
+            fg_color="transparent", hover_color="#2a2a3e", text_color="#555",
+            font=("Segoe UI", 14), command=self._settings
         ).pack(side="right")
 
-    # ── Connection ──
-    def check_connection(self):
-        def _check():
-            result = self.server.check_connection()
-            if "error" in result:
-                self.after(0, lambda: self.status_lbl.configure(text=f"❌ {result['error'][:40]}"))
-                self.after(0, lambda: self.dot.configure(text_color=COLOR_RED))
-            else:
-                self.after(0, lambda: self.status_lbl.configure(text=f"✅ Server: {SERVER_HOST}"))
-                self.after(0, lambda: self.dot.configure(text_color=COLOR_GREEN))
-        threading.Thread(target=_check, daemon=True).start()
+    # ── Build: Recording ──
+    def _build_rec(self):
+        self._clear()
+        self.geometry(f"{self.W}x{self.H+20}")
+        f = ctk.CTkFrame(self, fg_color="#1a1a2e", corner_radius=26,
+            border_color="#ff7eb3", border_width=1)
+        f.pack(fill="both", expand=True, padx=2, pady=2)
 
-    # ── Recording ──
-    def toggle_recording(self):
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="both", expand=True, padx=12, pady=0)
+
+        self.dot = ctk.CTkLabel(row, text="●", font=("Segoe UI", 9), text_color="#ef4444")
+        self.dot.pack(side="left")
+
+        self.rec_btn = ctk.CTkButton(row, text="⏹", width=38, height=38,
+            corner_radius=19, fg_color="#ef4444", hover_color="#dc2626",
+            text_color="#fff", font=("Segoe UI", 16), command=self._click)
+        self.rec_btn.pack(side="left", padx=(8, 0))
+
+        self.rec_time = ctk.CTkLabel(row, text="0s", font=("Segoe UI", 12),
+            text_color="#ff7eb3")
+        self.rec_time.pack(side="left", padx=(6, 0))
+
+        # VU meter
+        self.vu = ctk.CTkLabel(row, text="▁", font=("Segoe UI", 14),
+            text_color="#7c3aed")
+        self.vu.pack(side="left", padx=(4, 0))
+
+    # ── Build: Result ──
+    def _build_result(self):
+        self._clear()
+        self.geometry(f"{self.W}x{self.H+60}")
+        f = ctk.CTkFrame(self, fg_color="#1a1a2e", corner_radius=20,
+            border_color="#22c55e", border_width=1)
+        f.pack(fill="both", expand=True, padx=2, pady=2)
+
+        # Top bar
+        top = ctk.CTkFrame(f, fg_color="transparent")
+        top.pack(fill="x", padx=10, pady=(8, 0))
+
+        ctk.CTkLabel(top, text="✅", font=("Segoe UI", 11)).pack(side="left")
+        self.status = ctk.CTkLabel(top, text="", font=("Segoe UI", 9),
+            text_color="#22c55e")
+        self.status.pack(side="left", padx=(4, 0))
+
+        # Text preview (1 line)
+        self.preview = ctk.CTkLabel(f, text=self.text[:50]+("…" if len(self.text)>50 else ""),
+            font=("Segoe UI", 10), text_color="#ccc", anchor="w", justify="left")
+        self.preview.pack(fill="x", padx=10, pady=(4, 0))
+
+        # Action row
+        act = ctk.CTkFrame(f, fg_color="transparent")
+        act.pack(fill="x", padx=8, pady=(4, 6))
+
+        ctk.CTkButton(act, text="📋", width=32, height=28, corner_radius=14,
+            fg_color="#2a2a3e", hover_color="#3a3a4e", text_color="#ccc",
+            font=("Segoe UI", 12), command=self._copy
+        ).pack(side="left", padx=(0, 4))
+
+        self.tmux_btn = ctk.CTkButton(act, text="📟", width=32, height=28,
+            corner_radius=14, fg_color="#2a2a3e", hover_color="#3a3a4e",
+            text_color="#ccc", font=("Segoe UI", 12), state="disabled",
+            command=self._send_tmux)
+        self.tmux_btn.pack(side="left")
+
+        # Tmux dropdown (tiny)
+        self.tmux_var = ctk.StringVar(value="?")
+        self.tmux_drop = ctk.CTkOptionMenu(act, variable=self.tmux_var,
+            values=["(keine)"], width=80, height=28, corner_radius=14,
+            fg_color="#2a2a3e", button_color="#7c3aed", button_hover_color="#6d28d9",
+            dropdown_fg_color="#1a1a2e", dropdown_hover_color="#7c3aed",
+            text_color="#ccc", font=("Segoe UI", 9))
+        self.tmux_drop.pack(side="left", padx=(4, 0))
+
+        # Load tmux sessions in bg
+        threading.Thread(target=self._load_tmux, daemon=True).start()
+
+        ctk.CTkButton(act, text="✕", width=24, height=28, corner_radius=14,
+            fg_color="transparent", hover_color="#2a2a3e", text_color="#555",
+            font=("Segoe UI", 12), command=self._reset
+        ).pack(side="right")
+
+    def _clear(self):
+        for w in self.winfo_children():
+            w.destroy()
+
+    # ── Actions ──
+    def _click(self):
         if self.recording:
-            self.stop_recording()
+            self._stop()
         else:
-            self.start_recording()
+            self._record()
 
-    def start_recording(self):
+    def _record(self):
         if sd is None:
-            self.status_lbl.configure(text="❌ sounddevice nicht installiert")
+            self.status.configure(text="no snd")
             return
         self.recording = True
         self.audio_data = []
-        self.record_btn.configure(text="⏹  STOP", fg_color=COLOR_RED, hover_color=COLOR_RED_HOVER)
-        self.rec_lbl.configure(text="🔴 Aufnahme laeuft...")
-        self.text_box.configure(state="normal")
-        self.text_box.delete("1.0", "end")
-        self.text_box.insert("1.0", "🎤 Hoer zu... sprich ins Mikrofon")
-        self.text_box.configure(state="disabled")
+        self._build_rec()
+        self._t0 = time()
 
-        def callback(indata, frames, time_info, status):
+        def cb(indata, frames, t, status):
             if self.recording:
                 self.audio_data.append(indata.copy())
+                # Update VU + time on UI thread
+                level = int(np.abs(indata).mean() * 20)
+                vu = "▁▂▃▄▅▆▇█"[min(level, 7)]
+                elapsed = int(time() - self._t0)
+                self.after(0, lambda: self.vu.configure(text=vu))
+                self.after(0, lambda: self.rec_time.configure(text=f"{elapsed}s"))
 
         try:
             self.audio_stream = sd.InputStream(
-                samplerate=self.samplerate, channels=1, dtype="float32", callback=callback
-            )
+                samplerate=self.samplerate, channels=1, dtype="float32", callback=cb)
             self.audio_stream.start()
         except Exception as e:
             self.recording = False
-            self.record_btn.configure(text="⏺  AUFNEHMEN", fg_color=COLOR_ACCENT)
-            self.rec_lbl.configure(text=f"❌ {str(e)[:40]}")
+            self._build_idle()
+            self.dot.configure(text_color="#ef4444")
+            self.status.configure(text=str(e)[:15])
 
-    def stop_recording(self):
+    def _stop(self):
         self.recording = False
-        self.record_btn.configure(text="⏳  TRANSKRIBIERE...", fg_color=COLOR_PURPLE, state="disabled")
-        self.rec_lbl.configure(text="⏳ Sende zum Server...")
-
         if self.audio_stream:
             self.audio_stream.stop()
             self.audio_stream.close()
             self.audio_stream = None
 
-        if self.audio_data and len(self.audio_data) > 0:
-            threading.Thread(target=self._transcribe_thread, daemon=True).start()
-        else:
-            self._reset_recording()
+        if not self.audio_data:
+            self._reset()
+            return
 
-    def _transcribe_thread(self):
+        self._clear()
+        self.geometry(f"{self.W}x{self.H}")
+        f = ctk.CTkFrame(self, fg_color="#1a1a2e", corner_radius=26)
+        f.pack(fill="both", expand=True, padx=2, pady=2)
+        ctk.CTkLabel(f, text="⏳", font=("Segoe UI", 16)).pack(expand=True)
+
+        threading.Thread(target=self._transcribe, daemon=True).start()
+
+    def _transcribe(self):
         try:
             arr = np.concatenate(self.audio_data, axis=0)
-            import io
             buf = io.BytesIO()
             sf.write(buf, arr, self.samplerate, format="WAV")
-            wav = buf.getvalue()
-            result = self.server.transcribe(wav)
-            self.after(0, lambda: self._handle_result(result))
+            result = self.srv.transcribe(buf.getvalue())
+            self.after(0, lambda: self._on_result(result))
         except Exception as e:
-            self.after(0, lambda: self.status_lbl.configure(text=f"❌ {str(e)[:50]}"))
-            self.after(0, lambda: self._reset_recording())
+            self.after(0, lambda: self._on_error(str(e)[:30]))
 
-    def _handle_result(self, result):
-        if "error" in result:
-            self.rec_lbl.configure(text=f"❌ {result['error'][:40]}")
-            self.status_lbl.configure(text="❌ Transkription fehlgeschlagen")
-            self._reset_recording()
+    def _on_result(self, r):
+        if "error" in r:
+            self._on_error(r["error"])
             return
+        self.text = r.get("text", "")
+        if not self.text.strip():
+            self._reset()
+            return
+        lang = r.get("language", "?")
+        conf = r.get("language_probability", 0) * 100
+        self._build_result()
+        self.status.configure(text=f"{lang.upper()} {conf:.0f}% · {r.get('duration_s',0):.1f}s")
+        self.preview.configure(text=self.text[:80]+("…" if len(self.text)>80 else ""))
+        # Auto-copy to clipboard
+        self.clipboard_clear()
+        self.clipboard_append(self.text)
 
-        text = result.get("text", "")
-        lang = result.get("language", "?")
-        conf = result.get("language_probability", 0) * 100
+    def _on_error(self, msg):
+        self._build_idle()
+        self.dot.configure(text_color="#ef4444")
+        self.status.configure(text=msg[:15])
 
-        self.transcribed_text = text
-        self.text_box.configure(state="normal")
-        self.text_box.delete("1.0", "end")
-        self.text_box.insert("1.0", text)
-        self.text_box.configure(state="disabled")
+    def _copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.text)
+        self.status.configure(text="📋 kopiert!")
+        self.after(1500, lambda: self.status.configure(text=""))
 
-        self.rec_lbl.configure(text=f"✅ {lang.upper()} ({conf:.0f}%) · {result.get('duration_s', 0):.1f}s Audio")
-        self.send_btn.configure(state="normal" if text.strip() else "disabled")
-        self._reset_recording()
-
-    def _reset_recording(self):
-        self.record_btn.configure(text="⏺  AUFNEHMEN", fg_color=COLOR_ACCENT, state="normal")
-        if not self.rec_lbl.cget("text").startswith("✅"):
-            self.rec_lbl.configure(text="")
-
-    # ── Tmux ──
-    def refresh_tmux(self):
-        def _refresh():
-            sessions = self.server.get_tmux_sessions()
-            self.after(0, lambda: self._update_tmux(sessions))
-        threading.Thread(target=_refresh, daemon=True).start()
-
-    def _update_tmux(self, sessions):
+    def _load_tmux(self):
+        sessions = self.srv.tmux_sessions()
         if sessions:
-            self.tmux_drop.configure(values=sessions)
-            self.tmux_var.set(sessions[0])
+            self.after(0, lambda: self.tmux_drop.configure(values=sessions))
+            self.after(0, lambda: self.tmux_var.set(sessions[0]))
+            self.after(0, lambda: self.tmux_btn.configure(state="normal"))
 
-    def auto_refresh_tmux(self):
-        self.refresh_tmux()
-        self.after(15000, self.auto_refresh_tmux)
+    def _send_tmux(self):
+        s = self.tmux_var.get()
+        if s and self.text and not s.startswith("("):
+            self.srv.send_tmux(s, self.text)
+            self.status.configure(text="📨 gesendet!")
+            self.after(1500, self._reset)
 
-    def send_to_tmux(self):
-        session = self.tmux_var.get()
-        if not session or not self.transcribed_text:
-            return
-        self.send_btn.configure(state="disabled", text="📨 Sende...")
+    def _reset(self):
+        self.text = ""
+        self._build_idle()
+        self._check()
 
-        def _send():
-            ok = self.server.send_to_tmux(session, self.transcribed_text)
-            self.after(0, lambda: self._send_result(ok))
-        threading.Thread(target=_send, daemon=True).start()
+    # ── Health ──
+    def _check(self):
+        def c():
+            r = self.srv.check()
+            ok = "error" not in r
+            self.after(0, lambda: self.dot.configure(
+                text_color="#22c55e" if ok else "#ef4444"))
+            self.after(0, lambda: self.status.configure(
+                text="online" if ok else "offline"))
+        threading.Thread(target=c, daemon=True).start()
 
-    def _send_result(self, ok):
-        if ok:
-            self.send_btn.configure(text="✅  Gesendet!", state="normal")
-            self.after(2000, lambda: self.send_btn.configure(text="📨  In Tmux einfuegen"))
-        else:
-            self.send_btn.configure(text="❌  Fehlgeschlagen", fg_color=COLOR_RED, state="normal")
-            self.after(2000, lambda: self.send_btn.configure(
-                text="📨  In Tmux einfuegen", fg_color=COLOR_PURPLE))
-
-    # ── Clipboard ──
-    def copy_text(self):
-        if self.transcribed_text:
-            self.clipboard_clear()
-            self.clipboard_append(self.transcribed_text)
-            self.status_lbl.configure(text="📋 In Zwischenablage kopiert!")
-            self.after(2000, lambda: self.status_lbl.configure(text=f"✅ Server: {SERVER_HOST}"))
+    def _health_poll(self):
+        self._check()
+        self.after(15000, self._health_poll)
 
     # ── Settings ──
-    def show_settings(self):
+    def _settings(self):
         d = ctk.CTkToplevel(self)
-        d.title("Settings")
-        d.geometry(f"300x250+{self.winfo_x()+40}+{self.winfo_y()+80}")
-        d.configure(fg_color="#1a1a2e")
+        d.title("")
+        d.geometry(f"200x100+{self.winfo_x()+30}+{self.winfo_y()+60}")
+        d.configure(fg_color="#0d0d1a", borderwidth=1, relief="solid")
+        d.overrideredirect(True)
         d.attributes("-topmost", True)
         d.transient(self)
         d.grab_set()
 
-        ctk.CTkLabel(
-            d, text="⚙️  Einstellungen",
-            font=(FONT[0], 16, "bold"), text_color=COLOR_FG
-        ).pack(pady=(16, 12))
+        ctk.CTkLabel(d, text="Opacity", font=("Segoe UI", 10),
+            text_color="#666").pack(pady=(8, 2))
 
-        # Auto-start
-        autostart = CONFIG.getboolean("Widget", "autostart")
-        self.as_var = ctk.BooleanVar(value=autostart)
-
-        def toggle_as():
-            startup = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-            shortcut = startup / "VoiceWidget.bat"
-            script = Path(__file__).resolve()
-
-            if self.as_var.get():
-                with open(shortcut, "w") as f:
-                    venv_python = script.parent / "venv" / "Scripts" / "pythonw.exe"
-                    f.write(f'@echo off\nstart "" "{venv_python}" "{script}"\n')
-                CONFIG.set("Widget", "autostart", "true")
-            else:
-                if shortcut.exists():
-                    shortcut.unlink()
-                CONFIG.set("Widget", "autostart", "false")
-
-            with open(CONFIG_FILE, "w") as f:
-                CONFIG.write(f)
-
-        ctk.CTkSwitch(
-            d, text="Auto-Start (mit Windows)",
-            variable=self.as_var, command=toggle_as,
-            font=(FONT[0], 12), text_color=COLOR_FG,
-            progress_color=COLOR_ACCENT, button_color=COLOR_PURPLE
-        ).pack(pady=8)
-
-        ctk.CTkLabel(
-            d, text=f"Opacity: {WIDGET_OPACITY:.0%}",
-            font=(FONT[0], 12), text_color=COLOR_FG2
-        ).pack(pady=(12, 4))
-
-        def set_opacity(val):
-            o = float(val) / 100
+        def set_op(v):
+            o = float(v) / 100
             self.attributes("-alpha", o)
-            CONFIG.set("Widget", "opacity", str(o))
+            cfg.set("Widget", "opacity", str(o))
             with open(CONFIG_FILE, "w") as f:
-                CONFIG.write(f)
+                cfg.write(f)
 
-        ctk.CTkSlider(
-            d, from_=30, to=100, number_of_steps=70,
-            command=set_opacity, progress_color=COLOR_ACCENT,
-            button_color=COLOR_PURPLE
-        ).pack(fill="x", padx=20)
-        ctk.CTkSlider(d).pack()
+        s = ctk.CTkSlider(d, from_=30, to=100, command=set_op,
+            progress_color="#7c3aed", button_color="#7c3aed")
+        s.set(int(OPACITY * 100))
+        s.pack(fill="x", padx=16, pady=4)
 
-        ctk.CTkButton(
-            d, text="Schliessen", command=d.destroy,
-            corner_radius=RADIUS_SM, fg_color=COLOR_PURPLE, text_color="#ffffff"
-        ).pack(pady=(16, 8))
+        ctk.CTkButton(d, text="Schliessen", command=d.destroy,
+            fg_color="#2a2a3e", hover_color="#3a3a4e",
+            text_color="#aaa", font=("Segoe UI", 9), height=24,
+            corner_radius=12).pack(pady=(4, 6))
+
+    def quit(self):
+        self.quit_app()
 
     def quit_app(self):
         self.quit()
         self.destroy()
 
 
-# ── Main ──
 if __name__ == "__main__":
+    from time import time
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
-
-    app = VoiceWidget()
-
-    # Windows 11 Acrylic/Mica
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            hwnd = ctypes.windll.user32.GetParent(app.winfo_id())
-            DWMWA_SYSTEMBACKDROP_TYPE = 38
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, DWMWA_SYSTEMBACKDROP_TYPE,
-                ctypes.byref(ctypes.c_int(2)), 4
-            )
-        except:
-            pass
-
-    app.mainloop()
+    app = MiniWidget()
+    try:
+        app.mainloop()
+    except KeyboardInterrupt:
+        app.quit_app()
