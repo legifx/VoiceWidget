@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""VoiceWidget — einfaches rundes Orb. Ein Klick aufnehmen, Text in Zwischenablage."""
+"""VoiceWidget — Dynamic Island Style. Weißer Hintergrund, Lila/Blau Gradient."""
 import sys, os, json, configparser, threading, subprocess, io, time
 from pathlib import Path
 
 CFG = Path(__file__).parent / "config.ini"
 D = {"Server": {"host": "192.168.1.182", "user": "server", "port": "22", "whisper_port": "8766"},
-     "Widget": {"opacity": "0.92"}}
+     "Widget": {"opacity": "1.0"}}
 c = configparser.ConfigParser()
 if CFG.exists(): c.read(CFG)
 for s, k in D.items():
@@ -13,11 +13,8 @@ for s, k in D.items():
         if not c.has_option(s, kk): c.set(s, kk, v)
 with open(CFG, "w") as f: c.write(f)
 
-H = c.get("Server", "host")
-U = c.get("Server", "user")
-WP = c.get("Server", "whisper_port")
-WU = f"http://{H}:{WP}"
-OP = float(c.get("Widget", "opacity"))
+H = c.get("Server", "host"); U = c.get("Server", "user"); WP = c.get("Server", "whisper_port")
+WU = f"http://{H}:{WP}"; OP = float(c.get("Widget", "opacity"))
 
 import customtkinter as ctk
 try:
@@ -25,17 +22,21 @@ try:
 except:
     sd = np = sf = None
 
-# ── Farben ──
-BG = "#08080f"
-GL = "#141428"
-GL2 = "#1c1c3a"
-PU = "#a855f7"
-PUD = "#7c3aed"
-PK = "#ec4899"
-RD = "#ef4444"
-GN = "#22c55e"
-FG = "#f0f0ff"
-R = 999
+# ── Modern Palette (White Island + Purple/Blue) ──
+WHITE = "#ffffff"
+BG_ISLAND = "#f8f9fc"
+DARK = "#1a1a2e"
+GRAY = "#6b7280"
+GRAY_LIGHT = "#e5e7eb"
+PURPLE = "#7c3aed"
+PURPLE_LIGHT = "#a855f7"
+BLUE = "#3b82f6"
+BLUE_LIGHT = "#60a5fa"
+GREEN = "#10b981"
+RED = "#ef4444"
+FG = "#1f2937"
+FG2 = "#9ca3af"
+R = 22  # corner radius
 
 class Srv:
     def check(self):
@@ -63,125 +64,156 @@ class Srv:
             subprocess.run(["ssh", "-o", "ConnectTimeout=3", f"{U}@{H}", f"tmux send-keys -t '{s}' '{safe}' Enter"], capture_output=True, timeout=8)
         except: pass
 
-class Orb(ctk.CTk):
-    S = 56
+class Island(ctk.CTk):
+    W = 200
+    H = 48
+
     def __init__(self):
         super().__init__()
         self.srv = Srv()
-        self.rec = False
-        self.ad = []
-        self.ast = None
-        self.txt = ""
-        self.sr = 16000
-        self._t0 = 0
-        self._loading = False
-        self._result_widgets = False
+        self.rec = False; self.ad = []; self.ast = None; self.txt = ""
+        self.sr = 16000; self._t0 = 0
 
         self.title("")
-        self.configure(fg_color=BG)
+        self.configure(fg_color=BG_ISLAND)
         self.overrideredirect(True)
         self.attributes("-topmost", True, "-alpha", OP)
         sw = self.winfo_screenwidth()
-        self.geometry(f"{self.S}x{self.S}+{sw-self.S-24}+80")
+        self.geometry(f"{self.W}x{self.H}+{sw//2-self.W//2}+40")
         self.bind("<Button-1>", self._ds)
         self.bind("<B1-Motion>", self._dm)
         self._dx = self._dy = 0
+
+        # Island shadow/glow
+        self._island = ctk.CTkFrame(self, fg_color=WHITE, corner_radius=R,
+            border_width=0)
+        self._island.pack(fill="both", expand=True)
+        self._island.configure(border_color=GRAY_LIGHT, border_width=1)
+
         self._idle()
         threading.Thread(target=self._hc, daemon=True).start()
 
     def _ds(self, e): self._dx, self._dy = e.x, e.y
     def _dm(self, e): self.geometry(f"+{self.winfo_x()+e.x-self._dx}+{self.winfo_y()+e.y-self._dy}")
-    def _clr(self):
-        self._result_widgets = False
-        for w in self.winfo_children(): w.destroy()
 
-    def _idle(self, color=GL, border=PU):
-        self._clr()
-        self.geometry(f"{self.S}x{self.S}")
-        self._loading = False
-        f = ctk.CTkFrame(self, fg_color=BG, corner_radius=0, border_width=0)
-        f.pack(fill="both", expand=True)
-        ctk.CTkButton(f, text="🎤", width=self.S, height=self.S,
-            corner_radius=R, fg_color=color, hover_color=color,
-            text_color="#fff", font=("Segoe UI", 20), command=self._click,
-            border_color=border, border_width=2).pack(expand=True)
+    def _clear(self):
+        for w in self._island.winfo_children(): w.destroy()
 
+    def _btn(self, parent, text, cmd=None, bg=PURPLE, fg="#fff", w=36, h=36, font_size=14):
+        return ctk.CTkButton(parent, text=text, width=w, height=h, corner_radius=w//2,
+            fg_color=bg, hover_color=bg, text_color=fg, font=("Segoe UI", font_size),
+            command=cmd, border_width=0)
+
+    # ── IDLE: Kleine weiße Insel ──
+    def _idle(self):
+        self._clear()
+        self.geometry(f"{self.W}x{self.H}")
+        self._island.configure(border_color=GRAY_LIGHT)
+        row = ctk.CTkFrame(self._island, fg_color="transparent")
+        row.pack(expand=True, fill="both", padx=6, pady=4)
+
+        self._btn(row, "🎤", self._click, PURPLE, "#fff", 38, 38, 16).pack(side="left", padx=(2, 6))
+
+        ctk.CTkLabel(row, text="Voice", font=("Segoe UI", 13, "bold"),
+            text_color=DARK).pack(side="left")
+
+        ctk.CTkLabel(row, text="●", font=("Segoe UI", 8), text_color=GREEN).pack(side="right", padx=6)
+
+    # ── RECORDING ──
     def _rec_ui(self):
-        self._clr()
-        self.geometry(f"{self.S+80}x{self.S}")
-        f = ctk.CTkFrame(self, fg_color=GL, corner_radius=R, border_color=RD, border_width=2)
-        f.pack(fill="both", expand=True)
-        ctk.CTkButton(f, text="⏹", width=self.S, height=self.S, corner_radius=R,
-            fg_color=RD, hover_color="#dc2626", text_color="#fff",
-            font=("Segoe UI", 20), command=self._click, border_width=0).pack(side="left")
-        info = ctk.CTkFrame(f, fg_color="transparent")
-        info.pack(side="left", fill="both", expand=True, padx=(6, 10))
-        self._rt = ctk.CTkLabel(info, text="0s", font=("Segoe UI", 14, "bold"),
-            text_color=PK, anchor="w")
-        self._rt.pack(anchor="w")
-        self._vu = ctk.CTkLabel(info, text="▁▁▁", font=("Segoe UI", 10), text_color=PU, anchor="w")
-        self._vu.pack(anchor="w")
+        self._clear()
+        w = 260
+        self.geometry(f"{w}x{self.H}")
+        self._island.configure(border_color=RED)
+        row = ctk.CTkFrame(self._island, fg_color="transparent")
+        row.pack(expand=True, fill="both", padx=6, pady=4)
 
+        self._btn(row, "⏹", self._click, RED, "#fff", 38, 38, 16).pack(side="left", padx=(2, 6))
+
+        self._rt = ctk.CTkLabel(row, text="0:00", font=("Segoe UI", 14, "bold"),
+            text_color=DARK, width=40)
+        self._rt.pack(side="left")
+
+        self._vu = ctk.CTkLabel(row, text="▁▁▁▁▁▁▁▁", font=("Segoe UI", 10),
+            text_color=PURPLE, width=80)
+        self._vu.pack(side="left", padx=(6, 0))
+
+        ctk.CTkLabel(row, text="●", font=("Segoe UI", 8), text_color=RED).pack(side="right", padx=8)
+
+    # ── LOADING ──
     def _load_ui(self):
-        self._clr()
-        self.geometry(f"{self.S}x{self.S}")
-        self._loading = True
-        f = ctk.CTkFrame(self, fg_color=BG, corner_radius=0, border_width=0)
-        f.pack(fill="both", expand=True)
-        ctk.CTkLabel(f, text="⏳", font=("Segoe UI", 24), text_color=PU).pack(expand=True)
+        self._clear()
+        self.geometry(f"160x{self.H}")
+        self._island.configure(border_color=GRAY_LIGHT)
+        ctk.CTkLabel(self._island, text="⏳ Transkribieren...",
+            font=("Segoe UI", 13), text_color=GRAY).pack(expand=True)
 
+    # ── RESULT ──
     def _res_ui(self):
-        self._clr()
-        self._result_widgets = True
-        h = self.S + 80
-        self.geometry(f"300x{h}")
-        f = ctk.CTkFrame(self, fg_color=GL, corner_radius=R, border_color=GN, border_width=2)
-        f.pack(fill="both", expand=True)
-        top = ctk.CTkFrame(f, fg_color="transparent")
-        top.pack(fill="x", padx=14, pady=(10, 0))
-        self._sl = ctk.CTkLabel(top, text="✅", font=("Segoe UI", 12), text_color=GN)
+        self._clear()
+        w = 340
+        self.geometry(f"{w}x{self.H+60}")
+        self._island.configure(border_color=PURPLE_LIGHT)
+        # Close btn top-right
+        top = ctk.CTkFrame(self._island, fg_color="transparent", height=20)
+        top.pack(fill="x", padx=8, pady=(4, 0))
+        self._sl = ctk.CTkLabel(top, text="✅", font=("Segoe UI", 10), text_color=GREEN)
         self._sl.pack(side="left")
-        self._pv = ctk.CTkLabel(f, text="", font=("Segoe UI", 11), text_color=FG,
-            anchor="w", justify="left", wraplength=260)
-        self._pv.pack(fill="x", padx=14, pady=(6, 0))
-        acts = ctk.CTkFrame(f, fg_color="transparent")
-        acts.pack(fill="x", padx=8, pady=(6, 8))
-        ctk.CTkButton(acts, text="📋", width=36, height=32, corner_radius=R,
-            fg_color=GL2, hover_color="#2a2a4e", text_color=FG, font=("Segoe UI", 13),
-            command=self._cp).pack(side="left", padx=(4, 2))
-        self._tb = ctk.CTkButton(acts, text="📟", width=36, height=32, corner_radius=R,
-            fg_color=GL2, hover_color="#2a2a4e", text_color=FG, font=("Segoe UI", 13),
-            state="disabled", command=self._send)
+        ctk.CTkButton(top, text="✕", width=20, height=20, corner_radius=10,
+            fg_color="transparent", hover_color=GRAY_LIGHT, text_color=GRAY,
+            font=("Segoe UI", 10), command=self._dismiss).pack(side="right")
+
+        # Text preview
+        self._pv = ctk.CTkLabel(self._island, text="", font=("Segoe UI", 12),
+            text_color=FG, anchor="w", justify="left", wraplength=310)
+        self._pv.pack(fill="x", padx=14, pady=(4, 0))
+
+        # Actions
+        acts = ctk.CTkFrame(self._island, fg_color="transparent")
+        acts.pack(fill="x", padx=8, pady=(4, 8))
+
+        self._cp_btn = self._btn(acts, "📋", self._cp, PURPLE, "#fff", 34, 34, 13)
+        self._cp_btn.pack(side="left", padx=(4, 2))
+
+        self._tb = self._btn(acts, "📟", self._send, BLUE, "#fff", 34, 34, 13)
         self._tb.pack(side="left", padx=2)
+        self._tb.configure(state="disabled")
+
         self._tv = ctk.StringVar(value="?")
-        ctk.CTkOptionMenu(acts, variable=self._tv, values=["(keine)"], width=90, height=32,
-            corner_radius=R, fg_color=GL2, button_color=PU, button_hover_color=PUD,
-            dropdown_fg_color=GL, dropdown_hover_color=PUD, text_color=FG, font=("Segoe UI", 10)
+        ctk.CTkOptionMenu(acts, variable=self._tv, values=["(keine)"], width=90, height=34,
+            corner_radius=17, fg_color=GRAY_LIGHT, button_color=BLUE, button_hover_color=BLUE_LIGHT,
+            dropdown_fg_color=WHITE, dropdown_hover_color=BLUE_LIGHT,
+            text_color=DARK, font=("Segoe UI", 11, "bold")
         ).pack(side="left", padx=2)
-        ctk.CTkButton(acts, text="✕", width=32, height=32, corner_radius=R,
-            fg_color="transparent", hover_color="#2a2a3e", text_color="#555",
-            font=("Segoe UI", 13), command=self._dismiss).pack(side="right", padx=(4, 4))
+
+        # Progress bar
+        self._prog = ctk.CTkProgressBar(self._island, height=2, corner_radius=1,
+            fg_color=GRAY_LIGHT, progress_color=PURPLE, mode="determinate")
+        self._prog.pack(fill="x", padx=0, pady=0)
+        self._prog.set(1.0)
+
         threading.Thread(target=self._lt, daemon=True).start()
 
+    # ── Actions ──
     def _click(self):
-        if self._loading: return
         if self.rec: self._stop()
         else: self._record()
 
     def _record(self):
         if sd is None: return
-        self.rec = True
-        self.ad = []
-        self._rec_ui()
-        self._t0 = time.time()
+        self.rec = True; self.ad = []; self._rec_ui(); self._t0 = time.time()
         def cb(indata, frames, t, status):
             if self.rec:
                 self.ad.append(indata.copy())
                 try:
                     l = int(np.abs(indata).mean() * 30)
                     el = int(time.time() - self._t0)
+                    m, s = el // 60, el % 60
                     vu = "█" * min(l // 3, 8) + "▁" * max(8 - min(l // 3, 8), 0)
-                    self.after(0, lambda v=vu, e=el: self._vu.configure(text=v) or self._rt.configure(text=f"{e}s"))
+                    self.after(0, lambda v=vu, m=m, s=s: (
+                        self._vu.configure(text=v),
+                        self._rt.configure(text=f"{m}:{s:02d}"),
+                    ))
                 except: pass
         try:
             self.ast = sd.InputStream(samplerate=self.sr, channels=1, dtype="float32", callback=cb)
@@ -202,51 +234,44 @@ class Orb(ctk.CTk):
             sf.write(buf, arr, self.sr, format="WAV")
             r = self.srv.x(buf.getvalue())
             self.after(0, lambda: self._rx(r))
-        except Exception as ex:
-            self.after(0, lambda: self._idle())
+        except: self.after(0, self._idle)
 
     def _rx(self, r):
         if "error" in r: self._idle(); return
         self.txt = r.get("text", "")
         if not self.txt.strip(): self._idle(); return
-        lang = r.get("language", "?")
-        conf = r.get("language_probability", 0) * 100
+        lang = r.get("language", "?"); conf = r.get("language_probability", 0) * 100
         dur = r.get("duration_s", 0)
         self._res_ui()
         self._sl.configure(text=f"✅ {lang.upper()}  {conf:.0f}%  ·  {dur:.1f}s")
-        self._pv.configure(text=self.txt[:90]+("…" if len(self.txt)>90 else ""))
+        self._pv.configure(text=self.txt[:110]+("…" if len(self.txt)>110 else ""))
         self.clipboard_clear(); self.clipboard_append(self.txt)
 
     def _cp(self):
         self.clipboard_clear(); self.clipboard_append(self.txt)
-        self._sl.configure(text="📋  Kopiert!")
-        self.after(1500, lambda: self._sl.configure(text=""))
+        self._sl.configure(text="📋  Kopiert!"); self.after(1500, lambda: self._sl.configure(text=""))
 
     def _lt(self):
         ss = self.srv.tmux()
         if ss:
-            self.after(0, lambda s=ss: self._tv.set(s[0]) or self._tb.configure(state="normal") or
-                       self._tb.master.winfo_children()[3].configure(values=s))
+            self.after(0, lambda s=ss: (self._tv.set(s[0]), self._tb.configure(state="normal"),
+                       self._tb.master.winfo_children()[3].configure(values=s)))
 
     def _send(self):
         s = self._tv.get()
         if s and self.txt and not s.startswith("("):
-            self.srv.st(s, self.txt)
-            self._sl.configure(text="📨  Gesendet!")
+            self.srv.st(s, self.txt); self._sl.configure(text="📨  Gesendet!")
             self.after(1500, self._dismiss)
 
-    def _dismiss(self):
-        self.txt = ""
-        self._idle()
-
+    def _dismiss(self): self.txt = ""; self._idle()
     def _hc(self):
         ok = "error" not in self.srv.check()
-        self.after(0, lambda: self._idle(GL if ok else GL2, GN if ok else RD))
+        self.after(0, lambda: self._idle())
 
 
 if __name__ == "__main__":
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("dark-blue")
-    app = Orb()
+    ctk.set_appearance_mode("light")
+    ctk.set_default_color_theme("blue")
+    app = Island()
     try: app.mainloop()
     except KeyboardInterrupt: app.quit_app()
