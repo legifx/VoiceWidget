@@ -128,7 +128,7 @@ class Island(ctk.CTk):
         ctk.CTkLabel(row,text="Voice",font=("SF Pro Display",15,"bold"),text_color=FG_Text).pack(side="left",padx=10)
 
         # Status-Leuchte (gruen)
-        dot=ctk.CTkLabel(row,text="●",font=("Segoe UI",8),text_color="#34c34")
+        dot=ctk.CTkLabel(row,text="●",font=("Segoe UI",8),text_color="#34c34c")
         dot.pack(side="right")
 
     # ── RECORDING ──
@@ -170,7 +170,7 @@ class Island(ctk.CTk):
         # Header: Status + Sprache + Dismiss
         hdr=ctk.CTkFrame(row,fg_color="transparent"); hdr.pack(fill="x",pady=(0,6))
         self._status=ctk.CTkLabel(hdr,text=f"✅  {lang.upper()}  {conf:.0f}%  ·  {dur:.1f}s",
-            font=("SF Pro Display",11),text_color="#34c34")
+            font=("SF Pro Display",11),text_color="#34c34c")
         self._status.pack(side="left")
         ctk.CTkButton(hdr,text="✕",width=22,height=22,corner_radius=11,
             fg_color="transparent",hover_color=Divider,text_color=Text_Second,
@@ -274,7 +274,7 @@ class Island(ctk.CTk):
     def _copy(self):
         self.clipboard_clear(); self.clipboard_append(self.txt)
         self._status.configure(text="📋 Kopiert!",text_color=Purple)
-        self.after(1500,lambda:self._status.configure(text=f"✅  {self._status.cget('text').split('  ',2)[-1]}",text_color="#34c34"))
+        self.after(1500,lambda:self._status.configure(text=f"✅  {self._status.cget('text').split('  ',2)[-1]}",text_color="#34c34c"))
 
     def _load_sessions(self):
         ss=self.srv.tmux_sessions()
