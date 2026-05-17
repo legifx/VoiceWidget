@@ -20,7 +20,7 @@ Ein superschönes **Liquid Glass** Widget für Windows – drück aufnehmen, spr
 │  └─────────────────────────────────┘    │
 │                                         │
 │  ┌─ Ziel: ───────────────────────────┐  │
-│  │  ▼ NAME: Hermes (100.100.196.29)  │  │
+│  │  ▼ NAME: Hermes (192.168.1.182)  │  │
 │  │                                   │  │
 │  │  ○ nimbus (Nimbus Mode)           │  │
 │  │  ● hermes (aktive Session)       │  │
@@ -51,7 +51,7 @@ Ein superschönes **Liquid Glass** Widget für Windows – drück aufnehmen, spr
 - **Windows 10/11**
 - **Python 3.10+** installiert ([python.org](https://python.org))
 - **Tailscale** verbunden (dein PC muss im selben Tailnet wie der Server sein)
-- **SSH-Zugriff** auf deinen Server (`server@100.100.196.29`)
+- **SSH-Zugriff** auf deinen Server (`server@192.168.1.182`)
 
 ### 1. Setup-Script ausführen
 
@@ -103,7 +103,7 @@ Oder manuell: `WIN+R` → `shell:startup` → Verknüpfung zu `widget.py` reinle
 
 ```ini
 [Server]
-host = 100.100.196.29
+host = 192.168.1.182
 user = server
 port = 22
 whisper_port = 8766

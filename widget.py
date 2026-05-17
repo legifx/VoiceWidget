@@ -32,7 +32,6 @@ def load_config():
     config = configparser.ConfigParser()
     if CONFIG_FILE.exists():
         config.read(CONFIG_FILE)
-    # Fill defaults for missing keys
     for section, keys in DEFAULT_CONFIG.items():
         if not config.has_section(section):
             config.add_section(section)
@@ -56,7 +55,7 @@ try:
     import customtkinter as ctk
     from PIL import Image, ImageDraw, ImageTk
 except ImportError as e:
-    print(f"❌ Fehlende Abhängigkeit: {e}")
+    print(f"Fehlende Abhaengigkeit: {e}")
     print("Bitte installieren: pip install customtkinter Pillow")
     sys.exit(1)
 
@@ -65,7 +64,7 @@ try:
     import soundfile as sf
     import numpy as np
 except ImportError:
-    print("⚠️  sounddevice nicht installiert. Audio-Aufnahme deaktiviert.")
+    print("sounddevice nicht installiert. Audio-Aufnahme deaktiviert.")
     print("   pip install sounddevice soundfile numpy")
     sd = None
     sf = None
@@ -82,7 +81,7 @@ class ServerHelper:
         self.whisper_url = f"http://{self.host}:{WHISPER_PORT}"
 
     def check_connection(self):
-        """Prüft ob Server erreichbar ist."""
+        """Prueft ob Server erreichbar ist."""
         try:
             import urllib.request
             req = urllib.request.Request(f"{self.whisper_url}/health")
@@ -92,7 +91,7 @@ class ServerHelper:
             return {"error": str(e)}
 
     def transcribe(self, wav_data):
-        """Sendet Audio an Whisper API und gibt Text zurück."""
+        """Sendet Audio an Whisper API und gibt Text zurueck."""
         import urllib.request
         boundary = "----VoiceWidgetBoundary"
         body = (
@@ -124,49 +123,53 @@ class ServerHelper:
             ]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             sessions = [s.strip() for s in r.stdout.split("\n") if s.strip() and s.strip() != "NO_TMUX"]
-            return sessions if sessions else ["(keine Sessions)"]
-        except Exception as e:
-            return [f"(Fehler: {str(e)[:30]})"]
+            return sessions if sessions else []
+        except:
+            return []
 
     def send_to_tmux(self, session_name, text):
-        """Fügt Text in eine Tmux Session ein."""
+        """Fuegt Text in eine Tmux Session ein."""
         try:
-            # Escape the text for shell
-            escaped_text = text.replace("'", "'\\''")
+            safe = text.replace("'", "'\"'\"'").replace("\n", "\\n")
             cmd = [
                 "ssh", "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=5",
                 f"{self.user}@{self.host}",
                 "-p", str(self.port),
-                f"tmux send-keys -t '{session_name}' '{escaped_text}' Enter"
+                f"tmux send-keys -t '{session_name}' '{safe}' Enter"
             ]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             return r.returncode == 0
-        except Exception as e:
+        except:
             return False
 
 
-# ── Liquid Glass Theme ─────────────────────────────────
-THEME = {
-    "bg_main": "#1a1a2e",
-    "bg_glass": "rgba(255, 255, 255, 0.08)",
-    "bg_glass_hover": "rgba(255, 255, 255, 0.15)",
-    "fg_primary": "#ffffff",
-    "fg_secondary": "rgba(255, 255, 255, 0.6)",
-    "accent_primary": "#ff7eb3",
-    "accent_secondary": "#7c3aed",
-    "border": "rgba(255, 255, 255, 0.12)",
-    "border_focus": "rgba(255, 255, 255, 0.25)",
-    "radius": 24,
-    "radius_small": 14,
-    "font": ("SF Pro Display", "Segoe UI", "Helvetica Neue", "sans-serif"),
-    "font_mono": ("SF Mono", "Cascadia Code", "Consolas", "monospace"),
-}
+# ── Liquid Glass Theme (nur hex, tkinter-kompatibel) ──
+# Die Transparenz/Glass-Effekt kommt ueber window.attributes("-alpha", ...)
+# und die dunkle Farbpalette.
+COLOR_BG = "#0d0d1a"          # Tiefschwarz Hintergrund
+COLOR_GLASS = "#1a1a2e"       # Glasscheibe (dunkel)
+COLOR_GLASS_HOVER = "#2a2a3e" # Glasscheibe hover
+COLOR_GLASS_LIGHT = "#353550" # Hellere Scheibe (Button-Bg)
+COLOR_FG = "#ffffff"          # Primaertext
+COLOR_FG2 = "#8888aa"         # Sekundaertext
+COLOR_ACCENT = "#ff7eb3"      # Pink-Akzent (Aufnehmen)
+COLOR_ACCENT_HOVER = "#ff5588"
+COLOR_PURPLE = "#7c3aed"      # Lila (Tmux/Senden)
+COLOR_PURPLE_HOVER = "#6d28d9"
+COLOR_RED = "#ef4444"         # Rot (Stop)
+COLOR_RED_HOVER = "#dc2626"
+COLOR_GREEN = "#22c55e"       # Gruen (Verbunden)
+COLOR_BORDER = "#2a2a3e"     # Rahmen
+RADIUS = 24
+RADIUS_SM = 14
+FONT = ("Segoe UI",)
+FONT_BOLD = ("Segoe UI", "bold")
+FONT_MONO = ("Cascadia Code", "Consolas", "monospace")
 
 
 # ── Main Widget ────────────────────────────────────────
 class VoiceWidget(ctk.CTk):
-    """Liquid Glass Voice Transcription Widget."""
 
     def __init__(self):
         super().__init__()
@@ -178,43 +181,32 @@ class VoiceWidget(ctk.CTk):
         self.transcribed_text = ""
         self.audio_stream = None
 
-        # ── Window Setup ──
+        # ── Window ──
         self.title("VoiceWidget")
-        self.configure(fg_color="#1a1a2e")
-        self.overrideredirect(True)  # Frameless
+        self.configure(fg_color=COLOR_BG)
+        self.overrideredirect(True)
         self.attributes("-topmost", True)
         self.attributes("-alpha", WIDGET_OPACITY)
-        self.geometry("380x520+50+50")
+        self.geometry("380x540")
 
-        # Windows-specific: transparent background hack
-        if sys.platform == "win32":
-            try:
-                self.wm_attributes("-transparentcolor", "#1a1a2e")
-            except:
-                pass
-
-        # ── Center window on screen ──
+        # Center top-right
         self.update_idletasks()
         sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
         x = sw - 420
         y = 80
-        self.geometry(f"380x520+{x}+{y}")
+        self.geometry(f"380x540+{x}+{y}")
 
-        # ── Drag functionality ──
+        # ── Drag ──
         self.bind("<Button-1>", self.start_drag)
         self.bind("<B1-Motion>", self.do_drag)
         self.drag_x = 0
         self.drag_y = 0
 
-        # ── Build UI ──
+        # ── Build ──
         self.build_ui()
-
-        # ── Auto-refresh tmux ──
         self.refresh_tmux()
         self.after(10000, self.auto_refresh_tmux)
 
-    # ── Window dragging ──
     def start_drag(self, event):
         self.drag_x = event.x
         self.drag_y = event.y
@@ -224,218 +216,148 @@ class VoiceWidget(ctk.CTk):
         y = self.winfo_y() + event.y - self.drag_y
         self.geometry(f"+{x}+{y}")
 
-    # ── Build UI ──
     def build_ui(self):
-        # Main container with glass effect
-        self.main_frame = ctk.CTkFrame(
-            self,
-            corner_radius=THEME["radius"],
-            fg_color=THEME["bg_glass"],
-            border_color=THEME["border"],
-            border_width=1,
+        # Glass-Frame
+        self.main = ctk.CTkFrame(
+            self, corner_radius=RADIUS,
+            fg_color=COLOR_GLASS, border_color=COLOR_BORDER, border_width=1
         )
-        self.main_frame.pack(fill="both", expand=True, padx=8, pady=8)
+        self.main.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # ── Title Bar ──
-        title_frame = ctk.CTkFrame(
-            self.main_frame, fg_color="transparent", height=40
-        )
+        # ── Titlebar ──
+        title_frame = ctk.CTkFrame(self.main, fg_color="transparent", height=40)
         title_frame.pack(fill="x", padx=20, pady=(16, 0))
 
         ctk.CTkLabel(
-            title_frame,
-            text="🎤  VoiceWidget",
-            font=(THEME["font"][0], 16, "bold"),
-            text_color=THEME["fg_primary"],
+            title_frame, text="🎤  VoiceWidget",
+            font=(FONT[0], 16, "bold"), text_color=COLOR_FG
         ).pack(side="left")
 
-        # Close button
-        close_btn = ctk.CTkButton(
-            title_frame,
-            text="✕",
-            width=32, height=32,
-            corner_radius=16,
-            fg_color="transparent",
-            hover_color=THEME["bg_glass_hover"],
-            text_color=THEME["fg_secondary"],
-            font=(THEME["font"][0], 14),
-            command=self.quit_app,
-        )
-        close_btn.pack(side="right")
+        ctk.CTkButton(
+            title_frame, text="✕", width=32, height=32,
+            corner_radius=16, fg_color="transparent",
+            hover_color=COLOR_GLASS_HOVER, text_color=COLOR_FG2,
+            font=(FONT[0], 14), command=self.quit_app
+        ).pack(side="right")
 
-        # ── Connection Status ──
-        self.status_label = ctk.CTkLabel(
-            self.main_frame,
-            text="🔌 Verbinde...",
-            font=(THEME["font"][0], 11),
-            text_color=THEME["fg_secondary"],
+        # ── Status ──
+        self.status_lbl = ctk.CTkLabel(
+            self.main, text="🔌 Verbinde...",
+            font=(FONT[0], 11), text_color=COLOR_FG2
         )
-        self.status_label.pack(pady=(4, 0))
+        self.status_lbl.pack(pady=(4, 0))
         self.check_connection()
 
         # ── Record Button ──
-        btn_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        btn_frame = ctk.CTkFrame(self.main, fg_color="transparent")
         btn_frame.pack(pady=(20, 10))
 
         self.record_btn = ctk.CTkButton(
-            btn_frame,
-            text="⏺  AUFNEHMEN",
-            width=200, height=100,
-            corner_radius=50,
-            fg_color=THEME["accent_primary"],
-            hover_color="#ff5588",
-            text_color="#ffffff",
-            font=(THEME["font"][0], 18, "bold"),
-            command=self.toggle_recording,
+            btn_frame, text="⏺  AUFNEHMEN",
+            width=200, height=100, corner_radius=50,
+            fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER,
+            text_color="#ffffff", font=(FONT[0], 18, "bold"),
+            command=self.toggle_recording
         )
         self.record_btn.pack()
 
-        # ── Recording indicator ──
-        self.rec_indicator = ctk.CTkLabel(
-            self.main_frame,
-            text="",
-            font=(THEME["font"][0], 11),
-            text_color=THEME["accent_primary"],
+        self.rec_lbl = ctk.CTkLabel(
+            self.main, text="",
+            font=(FONT[0], 11), text_color=COLOR_ACCENT
         )
-        self.rec_indicator.pack()
+        self.rec_lbl.pack()
 
-        # ── Tmux Session Selector ──
-        tmux_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        # ── Tmux Section ──
+        tmux_frame = ctk.CTkFrame(self.main, fg_color="transparent")
         tmux_frame.pack(fill="x", padx=20, pady=(10, 4))
 
         ctk.CTkLabel(
-            tmux_frame,
-            text="📟  Ziel-Tmux",
-            font=(THEME["font"][0], 11),
-            text_color=THEME["fg_secondary"],
+            tmux_frame, text="📟  Ziel-Tmux",
+            font=(FONT[0], 11), text_color=COLOR_FG2
         ).pack(anchor="w")
 
         self.tmux_var = ctk.StringVar(value="(lade...)")
-        self.tmux_dropdown = ctk.CTkOptionMenu(
-            tmux_frame,
-            variable=self.tmux_var,
-            values=["(lade...)"],
-            corner_radius=THEME["radius_small"],
-            fg_color=THEME["bg_glass"],
-            button_color=THEME["accent_secondary"],
-            button_hover_color="#6d28d9",
-            dropdown_fg_color="#2a2a4e",
-            dropdown_hover_color=THEME["accent_secondary"],
-            text_color=THEME["fg_primary"],
-            font=(THEME["font"][0], 13),
+        self.tmux_drop = ctk.CTkOptionMenu(
+            tmux_frame, variable=self.tmux_var, values=["(lade...)"],
+            corner_radius=RADIUS_SM, fg_color=COLOR_GLASS,
+            button_color=COLOR_PURPLE, button_hover_color=COLOR_PURPLE_HOVER,
+            dropdown_fg_color="#1a1a2e", dropdown_hover_color=COLOR_PURPLE,
+            text_color=COLOR_FG, font=(FONT[0], 13)
         )
-        self.tmux_dropdown.pack(fill="x", pady=(4, 0))
+        self.tmux_drop.pack(fill="x", pady=(4, 0))
 
-        # Send button next to dropdown
-        send_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        send_frame.pack(fill="x", padx=20, pady=(4, 0))
+        # Send row
+        send_row = ctk.CTkFrame(self.main, fg_color="transparent")
+        send_row.pack(fill="x", padx=20, pady=(4, 0))
 
         self.send_btn = ctk.CTkButton(
-            send_frame,
-            text="📨  In Tmux einfügen",
-            corner_radius=THEME["radius_small"],
-            fg_color=THEME["accent_secondary"],
-            hover_color="#6d28d9",
-            text_color="#ffffff",
-            font=(THEME["font"][0], 12, "bold"),
-            state="disabled",
-            command=self.send_to_tmux,
+            send_row, text="📨  In Tmux einfuegen",
+            corner_radius=RADIUS_SM, fg_color=COLOR_PURPLE,
+            hover_color=COLOR_PURPLE_HOVER, text_color="#ffffff",
+            font=(FONT[0], 12, "bold"), state="disabled",
+            command=self.send_to_tmux
         )
         self.send_btn.pack(side="left", fill="x", expand=True)
 
-        self.refresh_btn = ctk.CTkButton(
-            send_frame,
-            text="🔄",
-            width=40, height=36,
-            corner_radius=THEME["radius_small"],
-            fg_color=THEME["bg_glass"],
-            hover_color=THEME["bg_glass_hover"],
-            text_color=THEME["fg_secondary"],
-            font=(THEME["font"][0], 14),
-            command=self.refresh_tmux,
-        )
-        self.refresh_btn.pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            send_row, text="🔄", width=40, height=36,
+            corner_radius=RADIUS_SM, fg_color=COLOR_GLASS,
+            hover_color=COLOR_GLASS_HOVER, text_color=COLOR_FG2,
+            font=(FONT[0], 14), command=self.refresh_tmux
+        ).pack(side="right", padx=(6, 0))
 
         # ── Text Output ──
-        text_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        text_frame.pack(fill="both", expand=True, padx=20, pady=(10, 16))
+        text_area = ctk.CTkFrame(self.main, fg_color="transparent")
+        text_area.pack(fill="both", expand=True, padx=20, pady=(10, 16))
 
         self.text_box = ctk.CTkTextbox(
-            text_frame,
-            corner_radius=THEME["radius_small"],
-            fg_color=THEME["bg_glass"],
-            border_color=THEME["border"],
-            border_width=1,
-            text_color=THEME["fg_primary"],
-            font=(THEME["font_mono"][0], 12),
-            wrap="word",
-            height=100,
+            text_area, corner_radius=RADIUS_SM,
+            fg_color=COLOR_GLASS, border_color=COLOR_BORDER, border_width=1,
+            text_color=COLOR_FG, font=(FONT_MONO[0], 12),
+            wrap="word", height=100
         )
         self.text_box.pack(side="left", fill="both", expand=True)
         self.text_box.insert("1.0", "Transkribierter Text erscheint hier...")
         self.text_box.configure(state="disabled")
 
-        # Copy button
-        copy_btn = ctk.CTkButton(
-            text_frame,
-            text="📋",
-            width=40, height=100,
-            corner_radius=THEME["radius_small"],
-            fg_color=THEME["bg_glass"],
-            hover_color=THEME["bg_glass_hover"],
-            text_color=THEME["fg_secondary"],
-            font=(THEME["font"][0], 18),
-            command=self.copy_text,
-        )
-        copy_btn.pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            text_area, text="📋", width=40, height=100,
+            corner_radius=RADIUS_SM, fg_color=COLOR_GLASS,
+            hover_color=COLOR_GLASS_HOVER, text_color=COLOR_FG2,
+            font=(FONT[0], 18), command=self.copy_text
+        ).pack(side="right", padx=(6, 0))
 
-        # ── Bottom bar ──
-        bottom_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent", height=30)
-        bottom_frame.pack(fill="x", padx=20, pady=(0, 12))
+        # ── Bottom Bar ──
+        bottom = ctk.CTkFrame(self.main, fg_color="transparent", height=30)
+        bottom.pack(fill="x", padx=20, pady=(0, 12))
 
-        # Animated dot
         self.dot = ctk.CTkLabel(
-            bottom_frame,
-            text="●",
-            font=(THEME["font"][0], 8),
-            text_color="#22c55e",
+            bottom, text="●", font=(FONT[0], 8), text_color=COLOR_GREEN
         )
         self.dot.pack(side="left")
 
         ctk.CTkLabel(
-            bottom_frame,
-            text=" verbunden",
-            font=(THEME["font"][0], 10),
-            text_color=THEME["fg_secondary"],
+            bottom, text=" verbunden",
+            font=(FONT[0], 10), text_color=COLOR_FG2
         ).pack(side="left", padx=(4, 0))
 
-        # Settings gear
-        settings_btn = ctk.CTkButton(
-            bottom_frame,
-            text="⚙️",
-            width=28, height=28,
-            corner_radius=14,
-            fg_color="transparent",
-            hover_color=THEME["bg_glass_hover"],
-            text_color=THEME["fg_secondary"],
-            font=(THEME["font"][0], 12),
-            command=self.show_settings,
-        )
-        settings_btn.pack(side="right")
+        ctk.CTkButton(
+            bottom, text="⚙️", width=28, height=28,
+            corner_radius=14, fg_color="transparent",
+            hover_color=COLOR_GLASS_HOVER, text_color=COLOR_FG2,
+            font=(FONT[0], 12), command=self.show_settings
+        ).pack(side="right")
 
     # ── Connection ──
     def check_connection(self):
         def _check():
             result = self.server.check_connection()
             if "error" in result:
-                self.after(0, lambda: self.status_label.configure(
-                    text=f"❌ {result['error'][:40]}"))
-                self.after(0, lambda: self.dot.configure(text_color="#ef4444"))
+                self.after(0, lambda: self.status_lbl.configure(text=f"❌ {result['error'][:40]}"))
+                self.after(0, lambda: self.dot.configure(text_color=COLOR_RED))
             else:
-                self.after(0, lambda: self.status_label.configure(
-                    text=f"✅ Server: {SERVER_HOST}"))
-                self.after(0, lambda: self.dot.configure(text_color="#22c55e"))
-
+                self.after(0, lambda: self.status_lbl.configure(text=f"✅ Server: {SERVER_HOST}"))
+                self.after(0, lambda: self.dot.configure(text_color=COLOR_GREEN))
         threading.Thread(target=_check, daemon=True).start()
 
     # ── Recording ──
@@ -447,20 +369,15 @@ class VoiceWidget(ctk.CTk):
 
     def start_recording(self):
         if sd is None:
-            self.status_label.configure(text="❌ sounddevice nicht installiert")
+            self.status_lbl.configure(text="❌ sounddevice nicht installiert")
             return
-
         self.recording = True
         self.audio_data = []
-        self.record_btn.configure(
-            text="⏹  STOP",
-            fg_color="#ef4444",
-            hover_color="#dc2626",
-        )
-        self.rec_indicator.configure(text="🔴 Aufnahme läuft...")
+        self.record_btn.configure(text="⏹  STOP", fg_color=COLOR_RED, hover_color=COLOR_RED_HOVER)
+        self.rec_lbl.configure(text="🔴 Aufnahme laeuft...")
         self.text_box.configure(state="normal")
         self.text_box.delete("1.0", "end")
-        self.text_box.insert("1.0", "🎤 Hör zu... sprich ins Mikrofon")
+        self.text_box.insert("1.0", "🎤 Hoer zu... sprich ins Mikrofon")
         self.text_box.configure(state="disabled")
 
         def callback(indata, frames, time_info, status):
@@ -469,32 +386,24 @@ class VoiceWidget(ctk.CTk):
 
         try:
             self.audio_stream = sd.InputStream(
-                samplerate=self.samplerate,
-                channels=1,
-                dtype="float32",
-                callback=callback,
+                samplerate=self.samplerate, channels=1, dtype="float32", callback=callback
             )
             self.audio_stream.start()
         except Exception as e:
             self.recording = False
-            self.record_btn.configure(text="⏺  AUFNEHMEN", fg_color=THEME["accent_primary"])
-            self.rec_indicator.configure(text=f"❌ {str(e)[:40]}")
+            self.record_btn.configure(text="⏺  AUFNEHMEN", fg_color=COLOR_ACCENT)
+            self.rec_lbl.configure(text=f"❌ {str(e)[:40]}")
 
     def stop_recording(self):
         self.recording = False
-        self.record_btn.configure(
-            text="⏳  TRANSKRIBIERE...",
-            fg_color=THEME["accent_secondary"],
-            state="disabled",
-        )
-        self.rec_indicator.configure(text="⏳ Sende zum Server...")
+        self.record_btn.configure(text="⏳  TRANSKRIBIERE...", fg_color=COLOR_PURPLE, state="disabled")
+        self.rec_lbl.configure(text="⏳ Sende zum Server...")
 
         if self.audio_stream:
             self.audio_stream.stop()
             self.audio_stream.close()
             self.audio_stream = None
 
-        # Convert audio to WAV bytes
         if self.audio_data and len(self.audio_data) > 0:
             threading.Thread(target=self._transcribe_thread, daemon=True).start()
         else:
@@ -502,30 +411,27 @@ class VoiceWidget(ctk.CTk):
 
     def _transcribe_thread(self):
         try:
-            audio_array = np.concatenate(self.audio_data, axis=0)
-
+            arr = np.concatenate(self.audio_data, axis=0)
             import io
             buf = io.BytesIO()
-            sf.write(buf, audio_array, self.samplerate, format="WAV")
-            wav_bytes = buf.getvalue()
-
-            result = self.server.transcribe(wav_bytes)
-
+            sf.write(buf, arr, self.samplerate, format="WAV")
+            wav = buf.getvalue()
+            result = self.server.transcribe(wav)
             self.after(0, lambda: self._handle_result(result))
         except Exception as e:
-            self.after(0, lambda: self.status_label.configure(text=f"❌ {str(e)[:50]}"))
+            self.after(0, lambda: self.status_lbl.configure(text=f"❌ {str(e)[:50]}"))
             self.after(0, lambda: self._reset_recording())
 
     def _handle_result(self, result):
         if "error" in result:
-            self.rec_indicator.configure(text=f"❌ {result['error'][:40]}")
-            self.status_label.configure(text="❌ Transkription fehlgeschlagen")
+            self.rec_lbl.configure(text=f"❌ {result['error'][:40]}")
+            self.status_lbl.configure(text="❌ Transkription fehlgeschlagen")
             self._reset_recording()
             return
 
         text = result.get("text", "")
-        language = result.get("language", "?")
-        confidence = result.get("language_probability", 0) * 100
+        lang = result.get("language", "?")
+        conf = result.get("language_probability", 0) * 100
 
         self.transcribed_text = text
         self.text_box.configure(state="normal")
@@ -533,34 +439,26 @@ class VoiceWidget(ctk.CTk):
         self.text_box.insert("1.0", text)
         self.text_box.configure(state="disabled")
 
-        self.rec_indicator.configure(
-            text=f"✅ {language.upper()} ({confidence:.0f}%) · {result.get('duration_s', 0):.1f}s Audio"
-        )
+        self.rec_lbl.configure(text=f"✅ {lang.upper()} ({conf:.0f}%) · {result.get('duration_s', 0):.1f}s Audio")
         self.send_btn.configure(state="normal" if text.strip() else "disabled")
         self._reset_recording()
 
     def _reset_recording(self):
-        self.record_btn.configure(
-            text="⏺  AUFNEHMEN",
-            fg_color=THEME["accent_primary"],
-            state="normal",
-        )
-        if not self.rec_indicator.cget("text").startswith("✅"):
-            self.rec_indicator.configure(text="")
+        self.record_btn.configure(text="⏺  AUFNEHMEN", fg_color=COLOR_ACCENT, state="normal")
+        if not self.rec_lbl.cget("text").startswith("✅"):
+            self.rec_lbl.configure(text="")
 
     # ── Tmux ──
     def refresh_tmux(self):
         def _refresh():
             sessions = self.server.get_tmux_sessions()
             self.after(0, lambda: self._update_tmux(sessions))
-
         threading.Thread(target=_refresh, daemon=True).start()
 
     def _update_tmux(self, sessions):
-        if sessions and sessions[0] != self.tmux_var.get():
-            self.tmux_dropdown.configure(values=sessions)
-            if sessions[0] and not sessions[0].startswith("("):
-                self.tmux_var.set(sessions[0])
+        if sessions:
+            self.tmux_drop.configure(values=sessions)
+            self.tmux_var.set(sessions[0])
 
     def auto_refresh_tmux(self):
         self.refresh_tmux()
@@ -568,169 +466,118 @@ class VoiceWidget(ctk.CTk):
 
     def send_to_tmux(self):
         session = self.tmux_var.get()
-        if not session or session.startswith("(") or not self.transcribed_text:
+        if not session or not self.transcribed_text:
             return
-
         self.send_btn.configure(state="disabled", text="📨 Sende...")
 
         def _send():
-            success = self.server.send_to_tmux(session, self.transcribed_text)
-            self.after(0, lambda: self._send_result(success))
-
+            ok = self.server.send_to_tmux(session, self.transcribed_text)
+            self.after(0, lambda: self._send_result(ok))
         threading.Thread(target=_send, daemon=True).start()
 
-    def _send_result(self, success):
-        if success:
+    def _send_result(self, ok):
+        if ok:
             self.send_btn.configure(text="✅  Gesendet!", state="normal")
-            self.after(2000, lambda: self.send_btn.configure(text="📨  In Tmux einfügen"))
+            self.after(2000, lambda: self.send_btn.configure(text="📨  In Tmux einfuegen"))
         else:
-            self.send_btn.configure(
-                text="❌  Fehlgeschlagen", fg_color="#ef4444", state="normal"
-            )
+            self.send_btn.configure(text="❌  Fehlgeschlagen", fg_color=COLOR_RED, state="normal")
             self.after(2000, lambda: self.send_btn.configure(
-                text="📨  In Tmux einfügen", fg_color=THEME["accent_secondary"]
-            ))
+                text="📨  In Tmux einfuegen", fg_color=COLOR_PURPLE))
 
     # ── Clipboard ──
     def copy_text(self):
         if self.transcribed_text:
             self.clipboard_clear()
             self.clipboard_append(self.transcribed_text)
-            self.status_label.configure(text="📋 In Zwischenablage kopiert!")
-            self.after(2000, lambda: self.status_label.configure(
-                text=f"✅ Server: {SERVER_HOST}"
-            ))
+            self.status_lbl.configure(text="📋 In Zwischenablage kopiert!")
+            self.after(2000, lambda: self.status_lbl.configure(text=f"✅ Server: {SERVER_HOST}"))
 
     # ── Settings ──
     def show_settings(self):
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Settings")
-        dialog.geometry("300x250+{}+{}".format(
-            self.winfo_x() + 40, self.winfo_y() + 80
-        ))
-        dialog.configure(fg_color="#2a2a4e")
-        dialog.attributes("-topmost", True)
-        dialog.transient(self)
-        dialog.grab_set()
+        d = ctk.CTkToplevel(self)
+        d.title("Settings")
+        d.geometry(f"300x250+{self.winfo_x()+40}+{self.winfo_y()+80}")
+        d.configure(fg_color="#1a1a2e")
+        d.attributes("-topmost", True)
+        d.transient(self)
+        d.grab_set()
 
         ctk.CTkLabel(
-            dialog,
-            text="⚙️  Einstellungen",
-            font=(THEME["font"][0], 16, "bold"),
-            text_color=THEME["fg_primary"],
+            d, text="⚙️  Einstellungen",
+            font=(FONT[0], 16, "bold"), text_color=COLOR_FG
         ).pack(pady=(16, 12))
 
-        # Auto-start toggle
+        # Auto-start
         autostart = CONFIG.getboolean("Widget", "autostart")
-        self.autostart_var = ctk.BooleanVar(value=autostart)
+        self.as_var = ctk.BooleanVar(value=autostart)
 
-        def toggle_autostart():
-            startup_dir = Path(os.environ.get(
-                "APPDATA", ""
-            )) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-            shortcut = startup_dir / "VoiceWidget.lnk"
+        def toggle_as():
+            startup = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+            shortcut = startup / "VoiceWidget.bat"
+            script = Path(__file__).resolve()
 
-            if self.autostart_var.get():
-                # Create shortcut
-                script_path = Path(__file__).resolve()
-                try:
-                    import win32com.client
-                    shell = win32com.client.Dispatch("WScript.Shell")
-                    shortcut_file = shell.CreateShortCut(str(shortcut))
-                    shortcut_file.TargetPath = sys.executable
-                    shortcut_file.Arguments = f'"{script_path}"'
-                    shortcut_file.WorkingDirectory = str(script_path.parent)
-                    shortcut_file.Save()
-                except:
-                    # Fallback: batch file
-                    bat = startup_dir / "VoiceWidget.bat"
-                    with open(bat, "w") as f:
-                        f.write(f'@echo off\nstart "" "{sys.executable}" "{script_path}"\n')
-                    shortcut = bat
+            if self.as_var.get():
+                with open(shortcut, "w") as f:
+                    venv_python = script.parent / "venv" / "Scripts" / "pythonw.exe"
+                    f.write(f'@echo off\nstart "" "{venv_python}" "{script}"\n')
                 CONFIG.set("Widget", "autostart", "true")
             else:
                 if shortcut.exists():
                     shortcut.unlink()
-                bat = startup_dir / "VoiceWidget.bat"
-                if bat.exists():
-                    bat.unlink()
                 CONFIG.set("Widget", "autostart", "false")
 
             with open(CONFIG_FILE, "w") as f:
                 CONFIG.write(f)
 
         ctk.CTkSwitch(
-            dialog,
-            text="Auto-Start (mit Windows)",
-            variable=self.autostart_var,
-            command=toggle_autostart,
-            font=(THEME["font"][0], 12),
-            text_color=THEME["fg_primary"],
-            progress_color=THEME["accent_primary"],
-            button_color=THEME["accent_secondary"],
+            d, text="Auto-Start (mit Windows)",
+            variable=self.as_var, command=toggle_as,
+            font=(FONT[0], 12), text_color=COLOR_FG,
+            progress_color=COLOR_ACCENT, button_color=COLOR_PURPLE
         ).pack(pady=8)
 
-        # Opacity slider
         ctk.CTkLabel(
-            dialog,
-            text=f"Opacity: {WIDGET_OPACITY:.0%}",
-            font=(THEME["font"][0], 12),
-            text_color=THEME["fg_secondary"],
+            d, text=f"Opacity: {WIDGET_OPACITY:.0%}",
+            font=(FONT[0], 12), text_color=COLOR_FG2
         ).pack(pady=(12, 4))
 
         def set_opacity(val):
-            opacity = float(val) / 100
-            self.attributes("-alpha", opacity)
-            CONFIG.set("Widget", "opacity", str(opacity))
+            o = float(val) / 100
+            self.attributes("-alpha", o)
+            CONFIG.set("Widget", "opacity", str(o))
             with open(CONFIG_FILE, "w") as f:
                 CONFIG.write(f)
 
-        opacity_slider = ctk.CTkSlider(
-            dialog,
-            from_=30, to=100,
-            number_of_steps=70,
-            command=set_opacity,
-            progress_color=THEME["accent_primary"],
-            button_color=THEME["accent_secondary"],
-        )
-        opacity_slider.set(int(WIDGET_OPACITY * 100))
-        opacity_slider.pack(fill="x", padx=20)
+        ctk.CTkSlider(
+            d, from_=30, to=100, number_of_steps=70,
+            command=set_opacity, progress_color=COLOR_ACCENT,
+            button_color=COLOR_PURPLE
+        ).pack(fill="x", padx=20)
+        ctk.CTkSlider(d).pack()
 
-        # Close button
         ctk.CTkButton(
-            dialog,
-            text="Schließen",
-            command=dialog.destroy,
-            corner_radius=THEME["radius_small"],
-            fg_color=THEME["accent_secondary"],
-            text_color="#ffffff",
+            d, text="Schliessen", command=d.destroy,
+            corner_radius=RADIUS_SM, fg_color=COLOR_PURPLE, text_color="#ffffff"
         ).pack(pady=(16, 8))
 
-    # ── Quit ──
     def quit_app(self):
         self.quit()
         self.destroy()
 
 
-# ── Main ──────────────────────────────────────────────
+# ── Main ──
 if __name__ == "__main__":
-    # Set appearance
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
 
     app = VoiceWidget()
 
-    # Apply blur behind window (Windows 11)
+    # Windows 11 Acrylic/Mica
     if sys.platform == "win32":
         try:
             import ctypes
-            from ctypes import wintypes
-            # Windows 11 acrylic/blur effect
             hwnd = ctypes.windll.user32.GetParent(app.winfo_id())
-            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-            DWMWA_MICA_EFFECT = 1029
             DWMWA_SYSTEMBACKDROP_TYPE = 38
-            # Try MICA first (Windows 11)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, DWMWA_SYSTEMBACKDROP_TYPE,
                 ctypes.byref(ctypes.c_int(2)), 4
