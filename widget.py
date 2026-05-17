@@ -26,7 +26,7 @@ except Exception as e:
 # ── Farben (Apple Dynamic Island Palette) ──
 BG_Window="#e8eaed"; BG_Card="#ffffff"; FG_Text="#1d1d1f"
 Accent="#007aff"; Accent_Light="#60a5fa"; Record="#ff3b30"
-Success="#34c34"; Text_Second="#86868b"; Divider="#d2d2d7"
+Success="#34c34c"; Text_Second="#86868b"; Divider="#d2d2d7"
 Purple="#bf5af2"; Purple_Light="#da8fff"
 
 def mp_encode(boundary, fields, files):
